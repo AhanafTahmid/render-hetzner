@@ -1,0 +1,56 @@
+/** Matrix template layout types. */
+import type { SocialsMap } from "../SocialIcons";
+
+export type MatrixLayoutType =
+  | "matrix_title"
+  | "terminal_text"
+  | "glitch_punch"
+  | "data_stream"
+  | "cipher_metric"
+  | "fork_choice"
+  | "matrix_image"
+  | "transmission"
+  | "awakening"
+  | "ending_socials";
+
+export interface MatrixLayoutProps {
+  title: string;
+  narration: string;
+  imageUrl?: string;
+  imageObjectPosition?: string;
+  imageZoom?: number;
+  accentColor: string;
+  bgColor: string;
+  textColor: string;
+  aspectRatio?: string;
+  fontFamily?: string;
+  // terminal_text
+  highlightWord?: string;
+  // glitch_punch
+  word?: string;
+  // data_stream
+  items?: string[];
+  // cipher_metric
+  metrics?: { value: string; label: string; suffix?: string }[];
+  // fork_choice
+  leftLabel?: string;
+  rightLabel?: string;
+  leftDescription?: string;
+  rightDescription?: string;
+  // transmission
+  phrases?: string[];
+  // awakening
+  highlightPhrase?: string;
+  cta?: string;
+  // typography overrides
+  titleFontSize?: number;
+  descriptionFontSize?: number;
+
+  // ending_socials
+  socials?: SocialsMap;
+  websiteLink?: string;
+  showWebsiteButton?: boolean;
+  ctaButtonText?: string;
+  /** Optional multi-CTA array (up to 3). When present, renderer renders columns. */
+  ctas?: Array<{ ctaButtonText?: string; websiteLink?: string; showWebsiteButton?: boolean }>;
+}

@@ -1,0 +1,188 @@
+import { useEffect, useState } from "react";
+import {
+  AbsoluteFill,
+  Audio,
+  Sequence,
+  staticFile,
+  CalculateMetadataFunction,
+  interpolate,
+  useCurrentFrame,
+} from "remotion";
+import { WHITEBOARD_LAYOUT_REGISTRY } from "./layouts";
+import { resolveFontFamily } from "../../fonts/registry";
+import type { WhiteboardLayoutType, WhiteboardLayoutProps } from "./types";
+import { LogoOverlay } from "../../components/LogoOverlay";
+import { getPlaybackSpeed, getSceneDurationFrames } from "../playbackSpeed";
+
+interface SceneData {
+  id: number;
+  order: number;
+  title: string;
+  narration: string;
+  layout: WhiteboardLayoutType;
+  layoutProps: Record<string, unknown>;
+  durationSeconds: number;
+  voiceoverFile: string | null;
+  images: string[];
+}
+
+interface VideoData {
+  projectName: string;
+  heroImage?: string | null;
+  accentColor: string;
+  bgColor: string;
+  textColor: string;
+  logo?: string | null;
+  logoPosition?: string;
+  logoOpacity?: number;
+  logoSize?: number | string;
+  aspectRatio?: string;
+  playbackSpeed?: number;
+  fontFamily?: string | null;
+  scenes: SceneData[];
+}
+
+interface VideoProps extends Record<string, unknown>{
+  dataUrl: string;
+}
+
+const WhiteboardTransition: React.FC<{ bgColor: string }> = ({ bgColor }) => {
+  const frame = useCurrentFrame();
+  const op = interpolate(frame, [0, 14], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  return <AbsoluteFill style={{ backgroundColor: bgColor, opacity: op, zIndex: 10 }} />;
+};
+
+export const calculateWhiteboardMetadata: CalculateMetadataFunction<VideoProps> =
+  async ({ props }) => {
+    const FPS = 30;
+    try {
+      const url = staticFile(props.dataUrl.replace(/^\//, ""));
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to fetch ${url}`);
+      const data: VideoData = await res.json();
+
+      const playbackSpeed = getPlaybackSpeed(data.playbackSpeed);
+      const sceneFrames = data.scenes.map((s) =>
+        getSceneDurationFrames(s.durationSeconds, FPS, playbackSpeed),
+      );
+      const totalFrames = sceneFrames.reduce((sum, f) => sum + f, 0);
+      const isPortrait = data.aspectRatio === "portrait";
+
+      return {
+        durationInFrames: Math.max(totalFrames, FPS * 5),
+        fps: FPS,
+        width: isPortrait ? 720 : 1280,
+        height: isPortrait ? 1280 : 720,
+      };
+    } catch {
+      return {
+        durationInFrames: FPS * 300,
+        fps: FPS,
+        width: 1280,
+        height: 720,
+      };
+    }
+  };
+
+export const WhiteboardVideo: React.FC<VideoProps> = ({ dataUrl }) => {
+  const [data, setData] = useState<VideoData | null>(null);
+
+  useEffect(() => {
+    fetch(staticFile(dataUrl.replace(/^\//, "")))
+      .then((res) => res.json())
+      .then(setData)
+      .catch(() => {
+        setData({
+          projectName: "Whiteboard Preview",
+          accentColor: "#1F2937",
+          bgColor: "#F7F3E8",
+          textColor: "#111827",
+          scenes: [
+            {
+              id: 1,
+              order: 1,
+              title: "A Story Begins",
+              narration: "Every big shift starts with one clear moment.",
+              layout: "drawn_title",
+              layoutProps: {},
+              durationSeconds: 5,
+              voiceoverFile: null,
+              images: [],
+            },
+          ],
+        });
+      });
+  }, [dataUrl]);
+
+  if (!data) return <AbsoluteFill style={{ backgroundColor: "#F7F3E8" }} />;
+
+  const FPS = 30;
+  const playbackSpeed = getPlaybackSpeed(data.playbackSpeed);
+  let currentFrame = 0;
+  const resolvedFontFamily = resolveFontFamily(data.fontFamily ?? null);
+
+  return (
+    <AbsoluteFill
+      style={{
+        backgroundColor: data.bgColor || "#F7F3E8",
+        fontFamily: resolvedFontFamily || undefined,
+      }}
+    >
+      {data.scenes.map((scene, index) => {
+        const durationFrames = getSceneDurationFrames(
+          scene.durationSeconds,
+          FPS,
+          playbackSpeed,
+        );
+        const startFrame = currentFrame;
+        currentFrame += durationFrames;
+
+        const LayoutComponent =
+          WHITEBOARD_LAYOUT_REGISTRY[scene.layout] || WHITEBOARD_LAYOUT_REGISTRY.marker_story;
+        const imageUrl = scene.images.length > 0 ? staticFile(scene.images[0]) : undefined;
+
+        const layoutProps: WhiteboardLayoutProps = {
+          ...scene.layoutProps,
+          title: scene.title,
+          narration: scene.narration,
+          accentColor: data.accentColor || "#1F2937",
+          bgColor: data.bgColor || "#F7F3E8",
+          textColor: data.textColor || "#111827",
+          aspectRatio: data.aspectRatio || "landscape",
+          imageUrl,
+          imageObjectPosition: String(Math.max(0, Math.min(100, Number((scene.layoutProps as Record<string, unknown>)?.imageFocusX ?? 50)))) + "% " + String(Math.max(0, Math.min(100, Number((scene.layoutProps as Record<string, unknown>)?.imageFocusY ?? 50)))) + "%",
+          imageZoom: Math.max(0.1, Number((scene.layoutProps as Record<string, unknown>)?.imageZoom ?? 1)),
+          fontFamily: resolvedFontFamily || undefined,
+        };
+
+        return (
+          <Sequence key={scene.id} from={startFrame} durationInFrames={durationFrames} name={scene.title}>
+            <LayoutComponent {...layoutProps} />
+            {scene.voiceoverFile && (
+              <Audio src={staticFile(scene.voiceoverFile)} playbackRate={playbackSpeed} />
+            )}
+            {index < data.scenes.length - 1 && (
+              <Sequence from={Math.max(0, durationFrames - 14)} durationInFrames={14}>
+                <WhiteboardTransition bgColor={data.bgColor || "#F7F3E8"} />
+              </Sequence>
+            )}
+          </Sequence>
+        );
+      })}
+
+      {data.logo && (
+        <LogoOverlay
+          src={staticFile(data.logo)}
+          position={data.logoPosition || "bottom_right"}
+          maxOpacity={data.logoOpacity ?? 0.9}
+          size={data.logoSize || "default"}
+          aspectRatio={data.aspectRatio || "landscape"}
+        />
+      )}
+    </AbsoluteFill>
+  );
+};
+

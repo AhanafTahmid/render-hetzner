@@ -1,0 +1,185 @@
+import { AbsoluteFill, Img, interpolate, useCurrentFrame, spring } from "remotion";
+import { SpotlightBackground } from "../SpotlightBackground";
+import {
+  SPOTLIGHT_BODY_DEFAULT_FONT_FAMILY,
+  SPOTLIGHT_DISPLAY_DEFAULT_FONT_FAMILY,
+} from "../constants";
+import type { SpotlightLayoutProps } from "../types";
+
+function normalizeTitleToken(word: string): string {
+  return word.toLowerCase().replace(/[.,!?:;]/g, "");
+}
+
+function resolveImpactTitleHighlightIndex(
+  words: string[],
+  highlightWord: string | undefined
+): number {
+  if (words.length === 0) return 0;
+  if (highlightWord?.trim()) {
+    const hw = normalizeTitleToken(highlightWord.trim());
+    const byExact = words.findIndex((w) => normalizeTitleToken(w) === hw);
+    if (byExact >= 0) return byExact;
+    const byIncludes = words.findIndex(
+      (w) =>
+        normalizeTitleToken(w).includes(hw) || hw.includes(normalizeTitleToken(w))
+    );
+    if (byIncludes >= 0) return byIncludes;
+  }
+  let best = 0;
+  let bestLen = 0;
+  words.forEach((w, i) => {
+    const len = normalizeTitleToken(w).replace(/[^a-z0-9]/gi, "").length;
+    if (len > bestLen && len >= 3) {
+      bestLen = len;
+      best = i;
+    }
+  });
+  if (bestLen >= 3) return best;
+  return 0;
+}
+
+/**
+ * ImpactTitle — Slam-In Title
+ *
+ * Title text springs from 200% scale, overshoots to ~105%, settles to 100%.
+ * Optional subtitle fades in below with delay.
+ * Optional image alongside title when available.
+ */
+export const ImpactTitle: React.FC<SpotlightLayoutProps> = ({
+  title,
+  narration,imageUrl,
+  imageObjectPosition,
+  imageZoom,
+  highlightWord,
+  accentColor,
+  textColor,
+  bgColor,
+  aspectRatio,
+  titleFontSize,
+  descriptionFontSize,
+  fontFamily,
+}) => {
+  const frame = useCurrentFrame();
+  const fps = 30;
+  const p = aspectRatio === "portrait";
+  const displayFontFamily =
+    fontFamily ?? SPOTLIGHT_DISPLAY_DEFAULT_FONT_FAMILY;
+  const bodyFontFamily = fontFamily ?? SPOTLIGHT_BODY_DEFAULT_FONT_FAMILY;
+
+  const titleScale = spring({
+    frame: frame - 3,
+    fps,
+    config: { damping: 16, stiffness: 210, mass: 1.2 },
+  });
+
+  const titleOpacity = interpolate(frame, [0, 12], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const subtitleOpacity = interpolate(frame, [25, 45], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const subtitleY = spring({
+    frame: frame - 25,
+    fps,
+    config: { damping: 20, stiffness: 160 },
+  });
+
+  const scale = 0.6 + titleScale * 0.4 + Math.sin(titleScale * Math.PI) * 0.05;
+  const hasImage = !!imageUrl;
+
+  const imageOpacity = interpolate(frame, [10, 35], [0, 1], { extrapolateRight: "clamp" });
+  const imageScale = spring({ frame: frame - 10, fps, config: { damping: 20, stiffness: 80 } });
+
+  const titleWords = title.trim().split(/\s+/).filter(Boolean);
+  const highlightIdx = resolveImpactTitleHighlightIndex(titleWords, highlightWord);
+  const baseTitleColor = textColor || "#FFFFFF";
+
+  return (
+    <AbsoluteFill style={{ overflow: "hidden" }}>
+      <SpotlightBackground bgColor={bgColor} />
+
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          display: "flex",
+          flexDirection: hasImage && !p ? "row" : "column",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: p ? 40 : 80,
+          gap: hasImage ? (p ? 24 : 48) : 0,
+        }}
+      >
+        {hasImage && (
+          <div
+            style={{
+              flex: p ? "none" : "0 0 38%",
+              width: p ? "70%" : "auto",
+              height: p ? 220 : 360,
+              borderRadius: 4,
+              overflow: "hidden",
+              opacity: imageOpacity,
+              transform: `scale(${imageScale})`,
+            }}
+          >
+            <Img src={imageUrl} style={{ width: "100%", height: "100%", objectFit: (imageZoom ?? 1) < 1 ? "contain" : "cover", objectPosition: (imageZoom ?? 1) < 1 ? "center" : (imageObjectPosition ?? "50% 50%"),
+                transform: `scale(${imageZoom ?? 1})`,
+                transformOrigin: (imageZoom ?? 1) < 1 ? "center center" : (imageObjectPosition ?? "50% 50%") }} />
+          </div>
+        )}
+        <div style={{ flex: hasImage && !p ? 1 : "none", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <h1
+          style={{
+            fontSize: titleFontSize ?? (p ? 87 : 100),
+            fontWeight: 900,
+            color: baseTitleColor,
+            fontFamily: displayFontFamily,
+            textAlign: "center",
+            lineHeight: 1.05,
+            transform: `scale(${scale})`,
+            opacity: titleOpacity,
+            letterSpacing: "-0.03em",
+            textTransform: "uppercase",
+            maxWidth: "95%",
+          }}
+        >
+          {titleWords.map((word, i) => (
+            <span
+              key={i}
+              style={{
+                color: i === highlightIdx ? accentColor : baseTitleColor,
+              }}
+            >
+              {word}
+              {i < titleWords.length - 1 ? " " : ""}
+            </span>
+          ))}
+        </h1>
+
+        {narration && (
+          <p
+            style={{
+              fontSize: descriptionFontSize ?? (p ? 35 : 33),
+              fontWeight: 300,
+              color: textColor,
+              fontFamily: bodyFontFamily,
+              textAlign: "center",
+              marginTop: p ? 20 : 28,
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              opacity: subtitleOpacity,
+              transform: `translateY(${(1 - subtitleY) * 12}px)`,
+              maxWidth: p ? "85%" : 900,
+            }}
+          >
+            {narration}
+          </p>
+        )}
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+

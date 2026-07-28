@@ -1,0 +1,4 @@
+# RENDER_DOMAIN comes from .env.vps. Caddy auto-provisions Let's Encrypt TLS.
+{$RENDER_DOMAIN} {
+	reverse_proxy render-server:8080
+}

@@ -1,0 +1,37 @@
+services:
+  render-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - render-tmp:/render-tmp
+    # Bound to loopback for debugging only — public traffic goes through Caddy.
+    ports:
+      - "127.0.0.1:8080:8080"
+    # Leave ~2 GB for the OS; if anything OOMs it's the render container (which
+    # fails the job cleanly and the caller retries), never the host.
+    mem_limit: 14g
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  render-tmp:
+  caddy-data:
+  caddy-config:

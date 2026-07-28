@@ -1,0 +1,175 @@
+import { useEffect, useState } from "react";
+import {
+  AbsoluteFill,
+  Audio,
+  Sequence,
+  staticFile,
+  CalculateMetadataFunction,
+} from "remotion";
+import "../../fonts/newspaper-defaults";
+import { NEWSPAPER_LAYOUT_REGISTRY } from "./layouts";
+import { resolveFontFamily } from "../../fonts/registry";
+import type { NewspaperLayoutType, BlogLayoutProps } from "./types";
+import { LogoOverlay } from "../../components/LogoOverlay";
+import { getPlaybackSpeed, getSceneDurationFrames } from "../playbackSpeed";
+
+interface SceneData {
+  id: number;
+  order: number;
+  title: string;
+  narration: string;
+  layout: string;
+  layoutProps: Record<string, unknown>;
+  durationSeconds: number;
+  voiceoverFile: string | null;
+  images: string[];
+}
+
+interface VideoData {
+  projectName: string;
+  heroImage?: string | null;
+  accentColor: string;
+  bgColor: string;
+  textColor: string;
+  logo?: string | null;
+  logoPosition?: string;
+  logoOpacity?: number;
+  logoSize?: number | string;
+  aspectRatio?: string;
+  playbackSpeed?: number;
+  fontFamily?: string | null;
+  scenes: SceneData[];
+}
+
+interface VideoProps extends Record<string, unknown> {
+  dataUrl: string;
+}
+
+export const calculateNewspaperMetadata: CalculateMetadataFunction<VideoProps> =
+  async ({ props }) => {
+    const FPS = 30;
+    try {
+      const url = staticFile(props.dataUrl.replace(/^\//, ""));
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to fetch ${url}`);
+      const data: VideoData = await res.json();
+
+      const playbackSpeed = getPlaybackSpeed(data.playbackSpeed);
+      const sceneFrames = data.scenes.map((s) =>
+        getSceneDurationFrames(s.durationSeconds, FPS, playbackSpeed),
+      );
+      const totalFrames = sceneFrames.reduce((sum, f) => sum + f, 0);
+      const isPortrait = data.aspectRatio === "portrait";
+
+      // Newspaper base resolution: 1280×720 in landscape, 720×1280 in portrait
+      return {
+        durationInFrames: Math.max(totalFrames, FPS * 5),
+        fps: FPS,
+        width: isPortrait ? 720 : 1280,
+        height: isPortrait ? 1280 : 720,
+      };
+    } catch {
+      return {
+        durationInFrames: FPS * 300,
+        fps: FPS,
+        width: 1280,
+        height: 720,
+      };
+    }
+  };
+
+export const NewspaperVideo: React.FC<VideoProps> = ({ dataUrl }) => {
+  const [data, setData] = useState<VideoData | null>(null);
+
+  useEffect(() => {
+    fetch(staticFile(dataUrl.replace(/^\//, "")))
+      .then((res) => res.json())
+      .then(setData)
+      .catch(() => {
+        setData({
+          projectName: "Newspaper Preview",
+          accentColor: "#FFE34D",
+          bgColor: "#FAFAF8",
+          textColor: "#111111",
+          scenes: [
+            {
+              id: 1,
+              order: 1,
+              title: "Headline",
+              narration: "A clear, editorial-style opening.",
+              layout: "news_headline",
+              layoutProps: {},
+              durationSeconds: 5,
+              voiceoverFile: null,
+              images: [],
+            },
+          ],
+        });
+      });
+  }, [dataUrl]);
+
+  if (!data) return <AbsoluteFill style={{ backgroundColor: "#FAFAF8" }} />;
+
+  const FPS = 30;
+  const playbackSpeed = getPlaybackSpeed(data.playbackSpeed);
+  let currentFrame = 0;
+  const resolvedFontFamily = resolveFontFamily(data.fontFamily ?? null);
+
+  return (
+    <AbsoluteFill
+      style={{
+        backgroundColor: data.bgColor || "#FAFAF8",
+        fontFamily: resolvedFontFamily || undefined,
+      }}
+    >
+      {data.scenes.map((scene) => {
+        const durationFrames = getSceneDurationFrames(
+          scene.durationSeconds,
+          FPS,
+          playbackSpeed,
+        );
+        const startFrame = currentFrame;
+        currentFrame += durationFrames;
+
+        const LayoutComponent =
+          NEWSPAPER_LAYOUT_REGISTRY[scene.layout as NewspaperLayoutType] ||
+          NEWSPAPER_LAYOUT_REGISTRY.article_lead;
+        const imageUrl = scene.images.length > 0 ? staticFile(scene.images[0]) : undefined;
+
+        const layoutProps: BlogLayoutProps = {
+          ...(scene.layoutProps as Partial<BlogLayoutProps>),
+          title: scene.title,
+          narration: scene.narration,
+          accentColor: data.accentColor || "#FFE34D",
+          bgColor: data.bgColor || "#FAFAF8",
+          textColor: data.textColor || "#111111",
+          aspectRatio: (data.aspectRatio as "landscape" | "portrait") || "landscape",
+          imageUrl,
+          imageObjectPosition: String(Math.max(0, Math.min(100, Number((scene.layoutProps as Record<string, unknown>)?.imageFocusX ?? 50)))) + "% " + String(Math.max(0, Math.min(100, Number((scene.layoutProps as Record<string, unknown>)?.imageFocusY ?? 50)))) + "%",
+          imageZoom: Math.max(0.1, Number((scene.layoutProps as Record<string, unknown>)?.imageZoom ?? 1)),
+          fontFamily: resolvedFontFamily || undefined,
+        };
+
+        return (
+          <Sequence key={scene.id} from={startFrame} durationInFrames={durationFrames} name={scene.title}>
+            <LayoutComponent {...layoutProps} />
+            {scene.voiceoverFile && (
+              <Audio src={staticFile(scene.voiceoverFile)} playbackRate={playbackSpeed} />
+            )}
+          </Sequence>
+        );
+      })}
+
+      {data.logo && (
+        <LogoOverlay
+          src={staticFile(data.logo)}
+          position={data.logoPosition || "bottom_right"}
+          maxOpacity={data.logoOpacity ?? 0.9}
+          size={data.logoSize || "default"}
+          aspectRatio={data.aspectRatio || "landscape"}
+        />
+      )}
+    </AbsoluteFill>
+  );
+};
+
