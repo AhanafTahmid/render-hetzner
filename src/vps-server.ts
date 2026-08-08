@@ -74,7 +74,16 @@ const RENDER_CONCURRENCY = intEnv("RENDER_MEDIA_CONCURRENCY", 8);
  * 720x1280 and 360x640, so 1080p output is upscaling regardless.
  */
 const RENDER_SCALE = Number.parseFloat(process.env.RENDER_SCALE ?? "") || 1;
-/** Renders running at once. 1 gives each render the full machine. */
+/**
+ * Renders running at once. 1 = every render gets the whole machine
+ * (RENDER_MEDIA_CONCURRENCY tabs plus ffmpeg's encoder threads), and everything
+ * else waits its turn in the FIFO queue.
+ *
+ * A previous revision ran a second job concurrently on a single reserved tab so
+ * it need not wait behind a long render. That was removed: a 1-tab render is
+ * ~8-10x slower, and splitting the box made BOTH jobs worse than running them
+ * back to back. Sequential-at-full-speed is the better trade.
+ */
 const MAX_PARALLEL_JOBS = intEnv("MAX_PARALLEL_JOBS", 1);
 const MAX_QUEUE_DEPTH = intEnv("MAX_QUEUE_DEPTH", 50);
 const JOB_TIMEOUT_MS = intEnv("RENDER_JOB_TIMEOUT_MS", 15 * 60 * 1000);
@@ -417,6 +426,10 @@ const pump = () => {
     const jobId = queue.shift();
     const job = jobId ? jobs.get(jobId) : undefined;
     if (!job || job.status !== "queued") continue;
+    console.log(
+      `Job ${job.renderJobId} starting (concurrency=${RENDER_CONCURRENCY}, ` +
+        `queued=${queue.length})`,
+    );
     runningJobs += 1;
     void runJob(job).finally(() => {
       runningJobs -= 1;
@@ -432,9 +445,6 @@ const createJobSchema = z.object({
   inputProps: z.custom<JsonObject>(),
   outputKey: z.string().min(1),
   idempotencyKey: z.string().min(1),
-  // Accepted for compatibility with the Cloudflare payload; ignored here.
-  targetChunkCount: z.number().int().positive().optional(),
-  maxWorkerPoolSize: z.number().int().positive().optional(),
 });
 
 const timingSafeMatch = (provided: string): boolean => {
@@ -467,6 +477,7 @@ app.get("/health", (_req, res) => {
     queueDepth: queue.length,
     runningJobs,
     concurrency: RENDER_CONCURRENCY,
+    maxParallelJobs: MAX_PARALLEL_JOBS,
     scale: RENDER_SCALE,
     crf: RENDER_CRF ?? 18,
   });
@@ -576,7 +587,8 @@ const main = async () => {
   app.listen(port, () => {
     console.log(
       `VPS render server listening on ${port} ` +
-        `(concurrency=${RENDER_CONCURRENCY}, parallelJobs=${MAX_PARALLEL_JOBS}, ` +
+        `(concurrency=${RENDER_CONCURRENCY}, ` +
+        `parallelJobs=${MAX_PARALLEL_JOBS}, jobTimeout=${Math.round(JOB_TIMEOUT_MS/60000)}m, ` +
         `scale=${RENDER_SCALE}, x264Preset=${x264Preset ?? "medium (default)"}, ` +
         `crf=${RENDER_CRF ?? "18 (Remotion default)"})`,
     );
