@@ -8,6 +8,10 @@ import { ShortComposition } from "./compositions/ShortVideo";
 // vidgpt — editor preview components (app/dashboard/_components/{RemotionVideo,BlogTemplatePlayer}.tsx)
 import VidgptVideo from "./compositions/VidgptVideo";
 import { BlogTemplatePlayer } from "./compositions/BlogTemplatePlayer";
+import {
+  WhiteboardExplainerVideo,
+  calculateWhiteboardExplainerMetadata,
+} from "./compositions/WhiteboardExplainerVideo";
 import { DEFAULT_COMPOSITION_ID } from "./constants";
 
 // Render-time metadata is carried in inputProps by every caller (durationInFrames,
@@ -23,6 +27,7 @@ type SizedProps = { durationInFrames?: number; width?: number; height?: number }
 //   id "render"        → short-form clip export        (shortshero)
 //   id "vidgpt"        → vidgpt feed/export video      (vidgpt)
 //   id "blog-template" → vidgpt themed blog templates  (vidgpt)
+//   id "whiteboard-explainer" → vidgpt whiteboard explainer (vidgpt)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const RemotionRoot = () => (
@@ -173,6 +178,22 @@ const RemotionRoot = () => (
         width: 1280,
         height: 720,
       }}
+    />
+    {/*
+      Whiteboard explainer. Unlike every other composition here, its metadata
+      comes from the `whiteboardConfig` manifest itself (or a fetched `dataUrl`),
+      not from durationInFrames/width/height in inputProps — so it reuses the
+      app's own calculateMetadata rather than the SizedProps reader above.
+    */}
+    <Composition
+      id="whiteboard-explainer"
+      component={WhiteboardExplainerVideo}
+      calculateMetadata={calculateWhiteboardExplainerMetadata}
+      durationInFrames={300}
+      fps={30}
+      width={1280}
+      height={720}
+      defaultProps={{ whiteboardConfig: null, dataUrl: null, showWatermark: false }}
     />
   </>
 );

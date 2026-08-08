@@ -527,6 +527,38 @@ function ImageClipSequence({
   );
 }
 
+/**
+ * An <Img> that survives a broken source. If `candidates[0]` fails to load it
+ * advances to the next candidate (the nearest neighbouring clip's image), so a
+ * single missing/undecodable generated image URL yields a neighbouring frame
+ * instead of a bare theme gradient. The onError handler also stops Remotion
+ * from throwing on a bad image mid-render and failing the whole job.
+ *
+ * `pauseWhenLoading` is deliberately omitted from the app's version: it only
+ * affects <Player> playback in a browser, and renderMedia resolves each frame
+ * deterministically.
+ */
+function SafeImg({
+  candidates,
+  style,
+}: {
+  candidates: string[];
+  style: React.CSSProperties;
+}) {
+  const [idx, setIdx] = React.useState(0);
+  // Reset to the preferred source whenever the candidate set changes (e.g. seeking).
+  React.useEffect(() => { setIdx(0); }, [candidates[0]]);
+  const src = candidates[idx];
+  if (!src) return null;
+  return (
+    <Img
+      src={src}
+      onError={() => setIdx((i) => (i + 1 < candidates.length ? i + 1 : i))}
+      style={style}
+    />
+  );
+}
+
 interface RemotionVideoProps {
   script?: any[];
   audioFileUrl?: string;
@@ -804,10 +836,39 @@ function RemotionVideo({
         const clip = resolvedClips[index];
         const { startFrame, durationFrames } = clipTimings[index] ?? { startFrame: 0, durationFrames: 1 };
         const image = clip?.url;
+
+        // Nearest non-empty photo URLs to `index`, ordered by distance. Used as
+        // load-failure fallbacks and to fill a clip that has no image of its own,
+        // so a single missing/broken image never leaves a blank gradient frame.
+        const photoFallbacks = (from: number): string[] => {
+          const out: string[] = [];
+          for (let d = 1; d < timingLength; d++) {
+            const prev = resolvedClips[from - d];
+            const next = resolvedClips[from + d];
+            if (prev && prev.type !== "video" && prev.url && !out.includes(prev.url)) out.push(prev.url);
+            if (next && next.type !== "video" && next.url && !out.includes(next.url)) out.push(next.url);
+          }
+          return out;
+        };
+
         if (!image) {
+          const fallbacks = photoFallbacks(index);
+          // Only truly blank when the whole video has no images at all.
+          if (fallbacks.length === 0) {
+            return (
+              <Sequence key={`gap-${index}`} from={startFrame} durationInFrames={durationFrames}>
+                <AbsoluteFill style={{ background: themeStyle.gradient }} />
+              </Sequence>
+            );
+          }
           return (
             <Sequence key={`gap-${index}`} from={startFrame} durationInFrames={durationFrames}>
-              <AbsoluteFill style={{ background: themeStyle.gradient }} />
+              <AbsoluteFill style={{ background: themeStyle.gradient }}>
+                <SafeImg
+                  candidates={fallbacks}
+                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                />
+              </AbsoluteFill>
             </Sequence>
           );
         }
@@ -890,8 +951,8 @@ function RemotionVideo({
                   }}
                 />
               ) : (
-                <Img
-                  src={image}
+                <SafeImg
+                  candidates={[image, ...photoFallbacks(index)]}
                   style={{
                     width: "100%",
                     height: "100%",
