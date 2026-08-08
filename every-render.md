@@ -13,9 +13,9 @@
 
 ## 1. What the server is
 
-One Hetzner CX VPS (8 vCPU / 16 GB, flat ~€16.49/mo) running a single
+One Hetzner CX53 VPS (16 vCPU / 32 GB, flat ~€34.99/mo) running a single
 long-lived Node process (`render-hetzner/src/vps-server.ts`) behind Caddy TLS.
-It renders **whole videos in one `renderMedia()` call at concurrency 8** (all
+It renders **whole videos in one `renderMedia()` call at concurrency 16** (all
 cores), one job at a time from a FIFO queue, and uploads the finished MP4
 directly to R2. No Cloudflare Workers, no Lambda, no chunking.
 
@@ -24,8 +24,8 @@ directly to R2. No Cloudflare Workers, no Lambda, no chunking.
 - Output: MP4 lands in the R2 bucket configured on the server, at the
   `outputKey` the app chooses; publicly readable at
   `<R2 public base URL>/<outputKey>`
-- Typical timings on the 8-core box: a 30–90 s 1080×1920 short ≈ a couple of
-  minutes; jobs queue when the box is busy (one render at a time)
+- Typical timings on the 16-core box: a 30–90 s 1080×1920 short ≈ a minute or
+  so; jobs queue when the box is busy (one render at a time)
 
 ### Compositions (one server, all products)
 
@@ -289,12 +289,12 @@ video plays from the final URL). Delete the `test/` object afterwards.
 ## 8. Server deploy & ops (reference — usually already running)
 
 Full instructions: `/Volumes/Files/programming/render-hetzner/README.md`.
-Short version: `setup-vps.sh` on a fresh Ubuntu 24.04 Hetzner CX box → DNS A
+Short version: `setup-vps.sh` on a fresh Ubuntu 24.04 Hetzner CX53 box → DNS A
 record → `cp .env.example .env` (domain, token, R2 creds) →
 `docker compose up -d --build`. Tuning knobs live in the VPS `.env`:
-`RENDER_MEDIA_CONCURRENCY=8`, `MAX_PARALLEL_JOBS=1`, optional
+`RENDER_MEDIA_CONCURRENCY=16`, `MAX_PARALLEL_JOBS=1`, optional
 `RENDER_X264_PRESET=faster`; benchmark with
-`docker compose exec render-server npx remotion benchmark --concurrencies=4,6,8,10 build <compositionId>`.
+`docker compose exec render-server npx remotion benchmark --concurrencies=8,12,16,20 build <compositionId>`.
 Logs: `docker compose logs -f render-server`. The box is stateless (outputs in
 R2) — rebuild from scratch ≈ 15 min.
 
@@ -316,10 +316,10 @@ this change set** (adapted to that app's job system and composition).
 | File | What it is |
 |---|---|
 | `lib/render-server.ts` | The client from §4, plus a rollback fallback: `renderServerUrl()` returns `RENDER_SERVER_URL ?? CLOUDFLARE_RENDER_WORKER_URL`, so deleting one env var switches back to the legacy Cloudflare worker. Copy this file into each app. |
-| `render/src/vps-server.ts` | The render server itself (same code now running from `render-hetzner/src/vps-server.ts`). Express :8080; FIFO queue (`MAX_PARALLEL_JOBS=1`); one warm Chromium shared across jobs; whole-video `renderMedia()` at `concurrency: 8`; timing-safe bearer auth; idempotency dedupe; disk journal (`/render-tmp/jobs.json`) for crash recovery; 15-min watchdog; 429 backpressure past 50 queued jobs; direct R2 multipart upload via `@aws-sdk/lib-storage`; 24 h job retention; shutdown force-exits after 10 s if Chromium wedges. |
+| `render/src/vps-server.ts` | The render server itself (same code now running from `render-hetzner/src/vps-server.ts`). Express :8080; FIFO queue (`MAX_PARALLEL_JOBS=1`); one warm Chromium shared across jobs; whole-video `renderMedia()` at `concurrency: 16`; timing-safe bearer auth; idempotency dedupe; disk journal (`/render-tmp/jobs.json`) for crash recovery; 15-min watchdog; 429 backpressure past 50 queued jobs; direct R2 multipart upload via `@aws-sdk/lib-storage`; 24 h job retention; shutdown force-exits after 10 s if Chromium wedges. |
 | `render/Dockerfile.vps` | node:22-bookworm-slim + Chromium system libs; `npx remotion browser ensure` + `npx remotion bundle` at **build** time → container boots warm. (= `render-hetzner/Dockerfile`) |
-| `render/docker-compose.vps.yml` | render-server (14 GB mem cap, log rotation, loopback-only port) + Caddy auto-TLS. (= `render-hetzner/docker-compose.yml`) |
-| `render/Caddyfile`, `render/.env.vps.example`, `render/setup-vps.sh`, `render/DEPLOY-VPS.md` | TLS proxy config, env template, one-time Ubuntu box setup (Docker, ufw 22/80/443, 4 GB swap), deploy guide. All mirrored in `render-hetzner/`. |
+| `render/docker-compose.vps.yml` | render-server (28 GB mem cap, log rotation, loopback-only port) + Caddy auto-TLS. (= `render-hetzner/docker-compose.yml`) |
+| `render/Caddyfile`, `render/.env.vps.example`, `render/setup-vps.sh`, `render/DEPLOY-VPS.md` | TLS proxy config, env template, one-time Ubuntu box setup (Docker, ufw 22/80/443, 8 GB swap), deploy guide. All mirrored in `render-hetzner/`. |
 | `plan.md` | The migration plan that was implemented. |
 
 ### 9.2 Files modified in shortshero (the app-side integration diff)

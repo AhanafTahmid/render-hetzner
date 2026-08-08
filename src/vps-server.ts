@@ -1,5 +1,5 @@
 /**
- * Standalone render server for a dedicated VPS (Hetzner CX, 8 vCPU / 16 GB).
+ * Standalone render server for a dedicated VPS (Hetzner CX53, 16 vCPU / 32 GB).
  *
  * Replaces the Cloudflare Worker + Durable Object + Containers pipeline with a
  * single long-running process. Same HTTP contract as the Worker, so the app
@@ -12,7 +12,7 @@
  *   GET  /health            → liveness + queue depth
  *
  * Unlike the container fleet there is no chunking: one renderMedia() call per
- * job uses the whole machine via `concurrency` (default 8 = all cores), with a
+ * job uses the whole machine via `concurrency` (default 16 = all cores), with a
  * FIFO queue in front and the finished MP4 uploaded straight to R2.
  */
 
@@ -55,16 +55,36 @@ const tmpDir = process.env.RENDER_TMP_DIR ?? "/render-tmp";
 const jobStateFile = path.join(tmpDir, "jobs.json");
 const authToken = process.env.RENDER_SERVER_TOKEN ?? "";
 
-/** Browser tabs rendering frames in parallel. 8 = all cores on a CX 8-vCPU box. */
+/**
+ * Browser tabs rendering frames in parallel. Deliberately BELOW the core count:
+ * benchmarked on a real 1698-frame vidshero job on the 16-core CX53, 8 rendered
+ * in 78.7-83.8s vs 84.7s at 16 — past ~12 the capture tabs thrash against
+ * ffmpeg's encoder threads instead of adding throughput. Remotion caps this at
+ * the core count anyway. Re-benchmark if the composition or box changes.
+ */
 const RENDER_CONCURRENCY = intEnv("RENDER_MEDIA_CONCURRENCY", 8);
+/**
+ * Output scale (Remotion `scale`, i.e. the browser's deviceScaleFactor). The
+ * composition stays 1080x1920 — only the rasterised output shrinks — so layout
+ * is pixel-identical and absolute px sizes (captions are `fontSize: 72`) keep
+ * their proportions. Changing COMP_DIMS instead would resize the canvas and
+ * make captions ~50% larger relative to the frame.
+ *
+ * 2/3 => 720x1280, which is 2.25x fewer pixels to rasterise. Source clips are
+ * 720x1280 and 360x640, so 1080p output is upscaling regardless.
+ */
+const RENDER_SCALE = Number.parseFloat(process.env.RENDER_SCALE ?? "") || 1;
 /** Renders running at once. 1 gives each render the full machine. */
 const MAX_PARALLEL_JOBS = intEnv("MAX_PARALLEL_JOBS", 1);
 const MAX_QUEUE_DEPTH = intEnv("MAX_QUEUE_DEPTH", 50);
 const JOB_TIMEOUT_MS = intEnv("RENDER_JOB_TIMEOUT_MS", 15 * 60 * 1000);
 const JOB_RETENTION_MS = intEnv("JOB_RETENTION_MS", 24 * 60 * 60 * 1000);
 const DELAY_RENDER_TIMEOUT_MS = intEnv("DELAY_RENDER_TIMEOUT_MS", 300_000);
-/** OffthreadVideo frame cache. 2 GB keeps source clips decoded in RAM (box has 16 GB). */
-const OFFTHREAD_CACHE_BYTES = intEnv("OFFTHREAD_VIDEO_CACHE_BYTES", 2 * 1024 * 1024 * 1024);
+/**
+ * OffthreadVideo frame cache. 4 GB keeps source clips decoded in RAM. Sized for
+ * the 32 GB box: 16 Chromium tabs need headroom, so this stays well under half.
+ */
+const OFFTHREAD_CACHE_BYTES = intEnv("OFFTHREAD_VIDEO_CACHE_BYTES", 4 * 1024 * 1024 * 1024);
 
 const X264_PRESETS = [
   "ultrafast", "superfast", "veryfast", "faster", "fast",
@@ -76,6 +96,27 @@ const x264Preset: X264Preset | undefined = X264_PRESETS.includes(
 )
   ? (process.env.RENDER_X264_PRESET as X264Preset)
   : undefined;
+
+/**
+ * h264 quality. Remotion defaults to CRF 18 (archival-grade) when this is
+ * undefined, which produced ~9.3 Mbps / 65 MB for a 57s 1080p export -- a lot of
+ * bits spent on footage whose sources are only 720x1280 and 360x640. Lower
+ * number = higher quality + bigger file; each +6 roughly halves the bitrate.
+ *
+ * Unlike RENDER_SCALE this does NOT reduce raster work, so expect render time to
+ * be flat; the win is a smaller file, which shortens the R2 upload that sits
+ * inside the job's wall-clock. Remotion's valid range for h264 is 1-51; anything
+ * outside it is ignored so a typo can't silently wreck output quality.
+ */
+const RENDER_CRF: number | undefined = (() => {
+  const parsed = Number.parseInt(process.env.RENDER_CRF ?? "", 10);
+  if (!Number.isFinite(parsed)) return undefined;
+  if (parsed < 1 || parsed > 51) {
+    console.warn(`[config] Ignoring RENDER_CRF=${process.env.RENDER_CRF} (valid range is 1-51)`);
+    return undefined;
+  }
+  return parsed;
+})();
 
 const r2Bucket = process.env.R2_BUCKET ?? "";
 const r2PublicUrl = (process.env.R2_PUBLIC_URL ?? "").replace(/\/$/, "");
@@ -314,7 +355,9 @@ const runJob = async (job: VpsJob) => {
       outputLocation,
       inputProps: job.inputProps,
       concurrency: RENDER_CONCURRENCY,
+      scale: RENDER_SCALE,
       x264Preset,
+      crf: RENDER_CRF,
       offthreadVideoCacheSizeInBytes: OFFTHREAD_CACHE_BYTES,
       timeoutInMilliseconds: DELAY_RENDER_TIMEOUT_MS,
       logLevel: "info",
@@ -424,6 +467,8 @@ app.get("/health", (_req, res) => {
     queueDepth: queue.length,
     runningJobs,
     concurrency: RENDER_CONCURRENCY,
+    scale: RENDER_SCALE,
+    crf: RENDER_CRF ?? 18,
   });
 });
 
@@ -532,7 +577,8 @@ const main = async () => {
     console.log(
       `VPS render server listening on ${port} ` +
         `(concurrency=${RENDER_CONCURRENCY}, parallelJobs=${MAX_PARALLEL_JOBS}, ` +
-        `x264Preset=${x264Preset ?? "medium (default)"})`,
+        `scale=${RENDER_SCALE}, x264Preset=${x264Preset ?? "medium (default)"}, ` +
+        `crf=${RENDER_CRF ?? "18 (Remotion default)"})`,
     );
     if (!authToken) console.warn("WARNING: RENDER_SERVER_TOKEN not set — set it in production!");
     // Warm the browser so the first job skips the Chromium cold start.

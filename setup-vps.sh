@@ -20,9 +20,9 @@ ufw allow 80/tcp
 ufw allow 443/tcp
 ufw --force enable
 
-echo "==> 4 GB swapfile (OOM safety net — 16 GB RAM is the working budget)"
+echo "==> 8 GB swapfile (OOM safety net — 32 GB RAM is the working budget)"
 if [ ! -f /swapfile ]; then
-  fallocate -l 4G /swapfile
+  fallocate -l 8G /swapfile
   chmod 600 /swapfile
   mkswap /swapfile
   swapon /swapfile

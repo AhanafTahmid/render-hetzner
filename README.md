@@ -1,13 +1,13 @@
 # render-hetzner — self-hosted Remotion render server
 
-One Hetzner CX VPS (8 vCPU / 16 GB, ~€16.49/mo flat) that renders videos for
+One Hetzner CX53 VPS (16 vCPU / 32 GB, ~€34.99/mo flat) that renders videos for
 **all** the video SaaS apps (shortshero, vidshero, vidgpt, weddings, blog
 templates…). This is the Hetzner counterpart of the `../render` folder's
 Cloudflare Containers pipeline — same compositions, same HTTP contract, but one
 box instead of a container fleet.
 
-**How it uses the 8 cores:** no chunking. One `renderMedia()` call per job with
-`concurrency: 8` (8 browser tabs capturing frames in parallel while ffmpeg
+**How it uses the 16 cores:** no chunking. One `renderMedia()` call per job with
+`concurrency: 16` (16 browser tabs capturing frames in parallel while ffmpeg
 encodes concurrently), a FIFO queue in front, one warm Chromium reused across
 jobs, the Remotion bundle baked at Docker build time, and the finished MP4
 uploaded straight to R2.
@@ -58,9 +58,9 @@ Progress bar: poll `GET /jobs/:id` and show `progress`. Statuses map to
 
 ## Deploy to the VPS
 
-1. **Provision:** Hetzner CX 8 vCPU / 16 GB, Ubuntu 24.04, SSH key. Then:
+1. **Provision:** Hetzner CX53 16 vCPU / 32 GB, Ubuntu 24.04, SSH key. Then:
    `scp setup-vps.sh root@<ip>:/root/ && ssh root@<ip> bash setup-vps.sh`
-   (Docker, firewall 22/80/443, 4 GB swap, unattended upgrades.)
+   (Docker, firewall 22/80/443, 8 GB swap, unattended upgrades.)
 2. **DNS:** A record `render.yourdomain.com` → VPS IP (Caddy auto-TLS).
 3. **Configure & start:**
    ```bash
@@ -80,7 +80,7 @@ Progress bar: poll `GET /jobs/:id` and show `progress`. Statuses map to
 ## Tune once after deploy
 
 ```bash
-docker compose exec render-server npx remotion benchmark --concurrencies=4,6,8,10 build <compositionId>
+docker compose exec render-server npx remotion benchmark --concurrencies=8,12,16,20 build <compositionId>
 ```
 
 Set the winner as `RENDER_MEDIA_CONCURRENCY` in `.env`, `docker compose up -d`.

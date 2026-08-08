@@ -10,9 +10,10 @@ services:
     # Bound to loopback for debugging only — public traffic goes through Caddy.
     ports:
       - "127.0.0.1:8080:8080"
-    # Leave ~2 GB for the OS; if anything OOMs it's the render container (which
-    # fails the job cleanly and the caller retries), never the host.
-    mem_limit: 14g
+    # Leave ~4 GB for the OS; if anything OOMs it's the render container (which
+    # fails the job cleanly and the caller retries), never the host. 16 Chromium
+    # tabs on the CX53 need the headroom.
+    mem_limit: 28g
     logging:
       driver: json-file
       options:
