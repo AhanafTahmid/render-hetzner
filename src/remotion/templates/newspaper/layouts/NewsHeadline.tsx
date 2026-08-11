@@ -1,13 +1,7 @@
 import React from "react";
-import {
-  AbsoluteFill,
-  interpolate,
-  useCurrentFrame,
-  useVideoConfig,
-  Img,
-  staticFile,
-} from "remotion";
+import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig, staticFile } from "remotion";
 import type { BlogLayoutProps } from "../types";
+import { SceneMedia } from "../../../components/SceneMedia";
 
 const H_FONT = "'Source Serif 4', Georgia, 'Times New Roman', serif";
 const B_FONT = "'Source Sans 3', 'Helvetica Neue', Helvetica, Arial, sans-serif";
@@ -229,15 +223,15 @@ export const NewsHeadline: React.FC<
           }}
         >
           <div style={{ width: "100%", height: "100%", overflow: "hidden", border: "1px solid #ddd" }}>
-            <Img
+            <SceneMedia
               src={imageUrl}
               style={{
                 width: "100%",
                 height: "100%",
-                objectFit: (imageZoom ?? 1) < 1 ? "contain" : "cover",
-                objectPosition: (imageZoom ?? 1) < 1 ? "center" : (imageObjectPosition ?? "50% 50%"),
+                objectFit: (imageZoom ?? 1) > 1 ? "cover" : "contain",
+                objectPosition: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center",
                 transform: `scale(${imageZoom ?? 1})`,
-                transformOrigin: (imageZoom ?? 1) < 1 ? "center center" : (imageObjectPosition ?? "50% 50%"),
+                transformOrigin: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center center",
                 display: "block",
                 // ✅ Dissolve animation combined with newsprint filter
                 filter: `

@@ -17,6 +17,8 @@ import { BLACKSWAN_LAYOUT_REGISTRY } from "../remotion/templates/blackswan/layou
 import { BLOOMBERG_LAYOUT_REGISTRY } from "../remotion/templates/bloomberg/layouts";
 import { CHRONICLE_LAYOUT_REGISTRY } from "../remotion/templates/chronicle/layouts";
 
+import { SceneDurationInFramesContext } from "../remotion/components/SceneDurationContext";
+
 const FPS = 30;
 
 // ── Per-template defaults ──────────────────────────────────────────────────────
@@ -417,7 +419,16 @@ export function BlogTemplatePlayer({
 
         return (
           <Sequence key={i} from={startFrame} durationInFrames={durationFrames} name={scene.title ?? `Scene ${i + 1}`}>
-            <LayoutComponent {...finalProps} />
+            {/*
+              A <Sequence> knows its own length but nothing inside it can read
+              that back — `useVideoConfig()` reports the COMPOSITION's duration.
+              `SceneMedia` needs the scene length to loop a stock clip that is
+              shorter than the narration instead of parking on its last frame,
+              so hand it down explicitly.
+            */}
+            <SceneDurationInFramesContext.Provider value={durationFrames}>
+              <LayoutComponent {...finalProps} />
+            </SceneDurationInFramesContext.Provider>
             {seg?.audioUrl && (
               <Audio src={seg.audioUrl} volume={voiceoverVolume} playbackRate={rate} />
             )}

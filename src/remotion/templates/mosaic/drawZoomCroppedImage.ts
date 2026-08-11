@@ -1,7 +1,11 @@
 /**
- * Canvas drawing matching ZoomCropImg:
- *   zoom >= 1  →  object-fit: cover, scale from focus point (zoom-in, crops edges)
- *   zoom <  1  →  object-fit: contain, scale from center (zoom-out, reveals full image)
+ * Canvas drawing matching ZoomCropImg — the mosaic tile effect samples its
+ * colours from this, so it has to frame the image the same way the layout
+ * displays it or the tiles resolve into a picture that is not on screen.
+ *
+ *   zoom == 1 (default) →  object-fit: contain, centered (the whole image)
+ *   zoom  >  1          →  object-fit: cover, scale from focus point (crops edges)
+ *   zoom  <  1          →  object-fit: contain, scale from center
  */
 export function parseObjectPositionPercent(s?: string): { px: number; py: number } {
   const p = (s ?? "50% 50%").trim().split(/\s+/);
@@ -35,14 +39,15 @@ export function drawZoomCroppedImage(
   }
 
   const z = Math.max(0.1, imageZoom ?? 1);
-  const isZoomedOut = z < 1;
+  // Only an explicit zoom-IN crops; at the default zoom the whole image is kept.
+  const isZoomedIn = z > 1;
 
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, 0, destW, destH);
   ctx.clip();
 
-  if (isZoomedOut) {
+  if (!isZoomedIn) {
     // object-fit: contain — scale to fit, center the image, then apply user zoom from center
     const scale = Math.min(destW / nw, destH / nh);
     const w = nw * scale * z;

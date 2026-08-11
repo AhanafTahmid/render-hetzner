@@ -1,5 +1,6 @@
 import React from "react";
-import { Img, interpolate, useCurrentFrame } from "remotion";
+import { interpolate, useCurrentFrame } from "remotion";
+import { SceneMedia } from "../../../components/SceneMedia";
 
 interface EmbossedImageProps {
   src: string;
@@ -93,7 +94,7 @@ export const EmbossedImage: React.FC<EmbossedImageProps> = ({
           clipPath: `circle(${clipRadius}% at 50% 50%)`,
         }}
       >
-        <Img
+        <SceneMedia
           src={src}
           style={{
             width: "100%",

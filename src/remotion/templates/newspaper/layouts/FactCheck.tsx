@@ -1,7 +1,8 @@
 import React from "react";
-import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig, Img, staticFile } from "remotion";
+import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig, staticFile } from "remotion";
 import { NewsBackground } from "../NewsBackground";
 import type { BlogLayoutProps } from "../types";
+import { SceneMedia } from "../../../components/SceneMedia";
 
 const H_FONT = "'Source Serif 4', Georgia, 'Times New Roman', serif";
 const B_FONT = "'Source Sans 3', 'Helvetica Neue', Helvetica, Arial, sans-serif";
@@ -167,7 +168,7 @@ export const FactCheck: React.FC<BlogLayoutProps & { imageUrl?: string }> = ({
                       position: "relative",
                     }}
                   >
-                    <Img
+                    <SceneMedia
                       src={imageUrl}
                       style={{
                         position: "absolute",
@@ -175,10 +176,10 @@ export const FactCheck: React.FC<BlogLayoutProps & { imageUrl?: string }> = ({
                         top: 0,
                         width: "100%",
                         height: "100%",
-                        objectFit: (imageZoom ?? 1) < 1 ? "contain" : "cover",
-                        objectPosition: (imageZoom ?? 1) < 1 ? "center" : (imageObjectPosition ?? "50% 50%"),
+                        objectFit: (imageZoom ?? 1) > 1 ? "cover" : "contain",
+                        objectPosition: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center",
                         transform: `scale(${imageZoom ?? 1})`,
-                        transformOrigin: (imageZoom ?? 1) < 1 ? "center center" : (imageObjectPosition ?? "50% 50%"),
+                        transformOrigin: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center center",
                         filter: "sepia(0.2) grayscale(0.3)",
                       }}
                     />
@@ -225,7 +226,7 @@ export const FactCheck: React.FC<BlogLayoutProps & { imageUrl?: string }> = ({
                       position: "relative",
                     }}
                   >
-                    <Img
+                    <SceneMedia
                       src={imageUrl}
                       style={{
                         position: "absolute",
@@ -234,10 +235,10 @@ export const FactCheck: React.FC<BlogLayoutProps & { imageUrl?: string }> = ({
                         width: "100%",
                         height: "100%",
                         display: "block",
-                        objectFit: (imageZoom ?? 1) < 1 ? "contain" : "cover",
-                        objectPosition: (imageZoom ?? 1) < 1 ? "center" : (imageObjectPosition ?? "50% 50%"),
+                        objectFit: (imageZoom ?? 1) > 1 ? "cover" : "contain",
+                        objectPosition: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center",
                         transform: `scale(${imageZoom ?? 1})`,
-                        transformOrigin: (imageZoom ?? 1) < 1 ? "center center" : (imageObjectPosition ?? "50% 50%"),
+                        transformOrigin: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center center",
                         filter: "sepia(0.2) contrast(1.1)",
                       }}
                     />

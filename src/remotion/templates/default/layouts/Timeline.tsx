@@ -1,13 +1,7 @@
 import React from "react";
-import {
-  AbsoluteFill,
-  interpolate,
-  useCurrentFrame,
-  spring,
-  useVideoConfig,
-  Img,
-} from "remotion";
+import { AbsoluteFill, interpolate, useCurrentFrame, spring, useVideoConfig } from "remotion";
 import { SceneLayoutProps } from "../types";
+import { SceneMedia } from "../../../components/SceneMedia";
 
 export const Timeline: React.FC<SceneLayoutProps & { imageUrl?: string }> = (props) => {
   const {
@@ -89,16 +83,16 @@ export const Timeline: React.FC<SceneLayoutProps & { imageUrl?: string }> = (pro
               zIndex: 2, // Ensure image/gradient sits above any content-side bleed
             }}
           >
-            <Img
+            <SceneMedia
               src={imageUrl}
               style={{
                 width: "100%",
                 height: "100%",
-                objectFit: (imageZoom ?? 1) < 1 ? "contain" : "cover",
-                objectPosition: (imageZoom ?? 1) < 1 ? "center" : (imageObjectPosition ?? "50% 50%"),
+                objectFit: (imageZoom ?? 1) > 1 ? "cover" : "contain",
+                objectPosition: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center",
                 display: "block", // BUG FIX: Removes baseline whitespace
                 transform: `scale(${(imageZoom ?? 1) * interpolate(entranceSpring, [0, 1], [1.1, 1])})`,
-                transformOrigin: (imageZoom ?? 1) < 1 ? "center center" : (imageObjectPosition ?? "50% 50%"),
+                transformOrigin: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center center",
               }}
             />
             {/* Gradient Overlay */}

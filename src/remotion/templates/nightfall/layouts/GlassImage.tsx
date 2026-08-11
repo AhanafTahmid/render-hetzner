@@ -1,9 +1,10 @@
 import { useMemo } from "react";
-import { AbsoluteFill, Img, interpolate, useCurrentFrame, spring } from "remotion";
+import { AbsoluteFill, interpolate, useCurrentFrame, spring } from "remotion";
 import { DarkBackground } from "../DarkBackground";
 import { glassCardStyle } from "../GlassCard";
 import type { NightfallLayoutProps } from "../types";
 import { random } from "remotion";
+import { SceneMedia } from "../../../components/SceneMedia";
 
 /**
  * GlassImage — Enhanced Professional Version
@@ -112,20 +113,20 @@ export const GlassImage: React.FC<NightfallLayoutProps> = ({
               zIndex: 1,
             }}
           >
-            <Img
+            <SceneMedia
               src={imageUrl}
               style={{
                 position: "absolute",
                 width: "100%",
                 height: "100%",
-                objectFit: (imageZoom ?? 1) < 1 ? "contain" : "cover",
-                objectPosition: (imageZoom ?? 1) < 1 ? "center" : (imageObjectPosition ?? "50% 50%"),
+                objectFit: (imageZoom ?? 1) > 1 ? "cover" : "contain",
+                objectPosition: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center",
                 opacity: imageOpacity,
                 transform: `
                   scale(${(imageZoom ?? 1) * kenBurnsScale})
                   translate(${kenBurnsPanX}%, ${kenBurnsPanY}%)
                 `,
-                transformOrigin: (imageZoom ?? 1) < 1 ? "center center" : (imageObjectPosition ?? "50% 50%"),
+                transformOrigin: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center center",
                 zIndex: 1,
               }}
             />

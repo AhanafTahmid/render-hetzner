@@ -1,7 +1,8 @@
-import { AbsoluteFill, interpolate, useCurrentFrame, spring, Img, useVideoConfig } from "remotion";
+import { AbsoluteFill, interpolate, useCurrentFrame, spring, useVideoConfig } from "remotion";
 import { DarkBackground } from "../DarkBackground";
 import { glassCardStyle } from "../GlassCard";
 import type { NightfallLayoutProps } from "../types";
+import { SceneMedia } from "../../../components/SceneMedia";
 
 /**
  * GlassStack — Enhanced Professional Version
@@ -315,15 +316,15 @@ export const GlassStack: React.FC<NightfallLayoutProps> = ({
         {/* Image Section */}
         {hasImage && (
           <div style={{ ...imageSectionBaseStyle, ...imageSectionDynamicStyle }}>
-            <Img
+            <SceneMedia
               src={imageUrl}
               style={{
                 width: "100%",
                 height: "100%",
-                objectFit: (imageZoom ?? 1) < 1 ? "contain" : "cover",
-                objectPosition: (imageZoom ?? 1) < 1 ? "center" : (imageObjectPosition ?? "50% 50%"),
+                objectFit: (imageZoom ?? 1) > 1 ? "cover" : "contain",
+                objectPosition: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center",
                 transform: `scale(${imageZoom ?? 1})`,
-                transformOrigin: (imageZoom ?? 1) < 1 ? "center center" : (imageObjectPosition ?? "50% 50%"),
+                transformOrigin: (imageZoom ?? 1) > 1 ? (imageObjectPosition ?? "50% 50%") : "center center",
                 borderRadius: 12,
                 border: `1px solid ${accentColor}30`,
               }}
