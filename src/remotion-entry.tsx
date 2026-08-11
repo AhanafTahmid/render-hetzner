@@ -12,6 +12,10 @@ import {
   WhiteboardExplainerVideo,
   calculateWhiteboardExplainerMetadata,
 } from "./compositions/WhiteboardExplainerVideo";
+import {
+  AeExplainerVideo,
+  calculateAeExplainerMetadata,
+} from "./compositions/ai-explainer/AeExplainerVideo";
 import { DEFAULT_COMPOSITION_ID } from "./constants";
 
 // Render-time metadata is carried in inputProps by every caller (durationInFrames,
@@ -28,6 +32,7 @@ type SizedProps = { durationInFrames?: number; width?: number; height?: number }
 //   id "vidgpt"        → vidgpt feed/export video      (vidgpt)
 //   id "blog-template" → vidgpt themed blog templates  (vidgpt)
 //   id "whiteboard-explainer" → vidgpt whiteboard explainer (vidgpt)
+//   id "ai-explainer"  → vidgpt AI Explainer (Template 2)  (vidgpt)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const RemotionRoot = () => (
@@ -194,6 +199,23 @@ const RemotionRoot = () => (
       width={1280}
       height={720}
       defaultProps={{ whiteboardConfig: null, dataUrl: null, showWatermark: false }}
+    />
+    {/*
+      AI Explainer (Template 2). The odd one out: its scenes do not exist in this
+      repo. They are model-written TSX, compiled to CommonJS by the app and sent
+      in `bundle`, then evaluated at render time against this bundle's own React
+      and Remotion — the same thing the dashboard player does, so the mp4 and the
+      preview run identical code. Size and duration come from the storyboard.
+    */}
+    <Composition
+      id="ai-explainer"
+      component={AeExplainerVideo}
+      calculateMetadata={calculateAeExplainerMetadata}
+      durationInFrames={300}
+      fps={30}
+      width={1920}
+      height={1080}
+      defaultProps={{ storyboard: null, bundle: null }}
     />
   </>
 );
