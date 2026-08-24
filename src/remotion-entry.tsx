@@ -80,6 +80,7 @@ const RemotionRoot = () => (
       width={1080}
       height={1920}
       defaultProps={{
+        extraTracks: [],
         bridePhotoUrl: "",
         groomPhotoUrl: "",
         bgVideoUrls: [],
@@ -199,7 +200,7 @@ const RemotionRoot = () => (
       fps={30}
       width={1280}
       height={720}
-      defaultProps={{ whiteboardConfig: null, dataUrl: null, showWatermark: false }}
+      defaultProps={{ whiteboardConfig: null, dataUrl: null, showWatermark: false, extraTracks: [] }}
     />
     {/*
       AI Explainer (Template 2). The odd one out: its scenes do not exist in this
@@ -216,7 +217,7 @@ const RemotionRoot = () => (
       fps={30}
       width={1920}
       height={1080}
-      defaultProps={{ storyboard: null, bundle: null }}
+      defaultProps={{ storyboard: null, bundle: null, extraTracks: [] }}
     />
   </>
 );

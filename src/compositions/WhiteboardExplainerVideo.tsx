@@ -22,6 +22,7 @@ import type {
   WbCursorWaypoint,
   Box,
 } from "../whiteboard-config";
+import { ExtraTracksLayer, type ExtraTrackInput } from "./ExtraTracksLayer";
 
 /**
  * Whiteboard Explainer composition — distilbook-style cropped reveals.
@@ -38,6 +39,8 @@ import type {
  */
 
 export interface WhiteboardExplainerProps extends Record<string, unknown> {
+  /** Editor overlay tracks. Drawn over the board, under the watermark. */
+  extraTracks?: ExtraTrackInput[];
   whiteboardConfig?: WbTutorConfig | null;
   dataUrl?: string | null;
   voiceoverVolume?: number;
@@ -388,6 +391,15 @@ export const WhiteboardExplainerVideo: React.FC<WhiteboardExplainerProps> = (pro
         <AnnotationStroke key={a.id} ann={a} clearFrame={clearFrameFor(a)} />
       ))}
       <MarkerCursor cfg={cfg} drawEnd={drawEnd} />
+
+      {/*
+        Editor overlay tracks. baseZIndex 0 rather than the default: nothing else
+        in this composition sets a z-index, so a positive value would also cover
+        the watermark below. At 0 the layer still contains its own per-track
+        indices, and paint order against its auto siblings is DOM order — over
+        the board and its marks, under the watermark that follows.
+      */}
+      <ExtraTracksLayer extraTracks={props.extraTracks} baseZIndex={0} />
 
       {audio.url ? <Audio src={audio.url} volume={props.voiceoverVolume ?? 1} pauseWhenBuffering /> : null}
       {props.musicUrl ? <Audio src={props.musicUrl} volume={props.musicVolume ?? 0.12} pauseWhenBuffering /> : null}

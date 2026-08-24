@@ -42,6 +42,8 @@ import "./fonts";
 export type AeExplainerVideoProps = {
   storyboard: AeStoryboard | null;
   bundle: AePreviewBundle | null;
+  /** Editor overlay tracks, passed straight through to the storyboard player. */
+  extraTracks?: unknown[];
 } & Record<string, unknown>;
 
 /**
@@ -69,7 +71,7 @@ const NoInput: React.FC<{ what: string }> = ({ what }) => (
   </AbsoluteFill>
 );
 
-export const AeExplainerVideo: React.FC<AeExplainerVideoProps> = ({ storyboard, bundle }) => {
+export const AeExplainerVideo: React.FC<AeExplainerVideoProps> = ({ storyboard, bundle, extraTracks }) => {
   // Evaluating the bundle is the expensive part of a frame and its result never
   // changes, so it is memoised on the bundle identity. Remotion renders frames
   // in the same browser context, so this is computed once per render, not 5400
@@ -82,7 +84,13 @@ export const AeExplainerVideo: React.FC<AeExplainerVideoProps> = ({ storyboard, 
   if (!storyboard) return <NoInput what="storyboard" />;
   if (!bundle) return <NoInput what="scene bundle" />;
 
-  return <AeSceneStoryboardPlayer storyboard={storyboard} scenes={scenes} />;
+  return (
+    <AeSceneStoryboardPlayer
+      storyboard={storyboard}
+      scenes={scenes}
+      extraTracks={extraTracks as never}
+    />
+  );
 };
 
 /**

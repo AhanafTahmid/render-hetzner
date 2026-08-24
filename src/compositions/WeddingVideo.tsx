@@ -22,6 +22,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
+import { ExtraTracksLayer, type ExtraTrackInput } from "./ExtraTracksLayer";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,8 @@ export interface WeddingVideoProps {
   musicUrl?: string;
   musicVolume?: number;
   showWatermark?: boolean;
+  /** Editor overlay tracks. Drawn over the whole edit, under the watermark. */
+  extraTracks?: ExtraTrackInput[];
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -460,6 +463,7 @@ export function WeddingVideo({
   musicUrl,
   musicVolume = 0.75,
   showWatermark = true,
+  extraTracks = [],
 }: WeddingVideoProps) {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
@@ -593,6 +597,15 @@ export function WeddingVideo({
           </div>
         </AbsoluteFill>
       )}
+
+      {/*
+        ── Editor overlay tracks ──
+        baseZIndex 85 is chosen against this composition's own scale, not the
+        shared default of 60: the photo cards, text overlays and the outro card
+        already occupy 4–80, and the watermark sits at 90. 85 puts a dropped clip
+        over the entire edit while leaving the watermark on top.
+      */}
+      <ExtraTracksLayer extraTracks={extraTracks} baseZIndex={85} />
 
       {/* ── Music ── */}
       {musicUrl && <Audio src={musicUrl} volume={musicVolume} />}

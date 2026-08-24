@@ -52,6 +52,8 @@ import { springTiming, TransitionSeries } from "@remotion/transitions";
  */
 const COMIC_CAPTION_FONT_STACK = '"Patrick Hand", "Comic Sans MS", cursive';
 
+import { ExtraTracksLayer, type ExtraTrackInput } from "../ExtraTracksLayer";
+
 import { AmbientGlow, PersistentParticles, Vignette } from "./effects";
 import { cinematicFade, cinematicSlide } from "./transitions";
 
@@ -103,6 +105,8 @@ export interface AePlayerProps {
   storyboard: AeStoryboard;
   /** scene_key → component, from the generated project's index.ts. */
   scenes: Record<string, AeSceneComponent>;
+  /** Editor overlay tracks. Drawn over the scenes, under watermark/captions. */
+  extraTracks?: ExtraTrackInput[];
 }
 
 /** ~1.5s at 30fps. Long enough to read as a camera move, not a cut. */
@@ -597,7 +601,7 @@ const Captions: React.FC<{ words: { text: string; start: number; end: number }[]
   );
 };
 
-export const AeSceneStoryboardPlayer: React.FC<AePlayerProps> = ({ storyboard, scenes }) => {
+export const AeSceneStoryboardPlayer: React.FC<AePlayerProps> = ({ storyboard, scenes, extraTracks }) => {
   const { fps } = useVideoConfig();
   const buffer = storyboard.audio?.buffer_between_scenes_seconds ?? 1.0;
 
@@ -697,6 +701,14 @@ export const AeSceneStoryboardPlayer: React.FC<AePlayerProps> = ({ storyboard, s
       })()}
 
       <PersistentParticles count={25} color="#ffffff" seed="cinematic-dust" />
+
+      {/*
+        Editor overlay tracks — over the scenes and the dust, under the
+        watermark, vignette and captions that follow. baseZIndex 0 because
+        nothing here sets a z-index: the layer keeps its own per-track order
+        contained, and paint order against its auto siblings is DOM order.
+      */}
+      <ExtraTracksLayer extraTracks={extraTracks} baseZIndex={0} />
 
       {storyboard.watermark?.enabled && (storyboard.watermark.text || storyboard.watermark.url) ? (
         <Watermark
