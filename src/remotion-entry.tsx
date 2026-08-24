@@ -176,6 +176,7 @@ const RemotionRoot = () => (
         imageList: [],
         clipDurations: [],
         voiceoverSegments: [],
+        extraTracks: [],
         showWatermark: false,
         captionsVisible: true,
         themeId: "whiteboard",

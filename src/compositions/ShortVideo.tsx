@@ -5,6 +5,7 @@
 import React from "react";
 import {
   AbsoluteFill,
+  Audio,
   Img,
   OffthreadVideo,
   useCurrentFrame,
@@ -108,7 +109,7 @@ function hexToRgba(hex: string, opacity: number): string {
 }
 
 // ── Extra track clip renderer ─────────────────────────────────────────────────
-function ExtraClipLayer({ clip }: { clip: any }) {
+function ExtraClipLayer({ clip, muted }: { clip: any; muted: boolean }) {
   const frame = useCurrentFrame();
   const N = Math.max(1, clip.durationFrames ?? 30);
   const effect = clip.effect || "none";
@@ -236,10 +237,22 @@ function ExtraClipLayer({ clip }: { clip: any }) {
 
   if (!clip.url?.startsWith("http")) return null;
 
+  // An audio clip has no picture. Before this it fell through to the <Img>
+  // branch below, which pointed an image element at an mp3 — a decode failure
+  // that Remotion raises as a render error, so one audio overlay could fail the
+  // whole export.
+  if (clip.type === "audio") {
+    return <Audio src={clip.url} volume={muted ? 0 : (clip.volume ?? 1)} />;
+  }
+
   if (clip.type === "video") {
     return (
       <div style={containerStyle}>
-        <OffthreadVideo src={clip.url} style={{ ...mediaStyle, position: "absolute", inset: 0 }} />
+        <OffthreadVideo
+          src={clip.url}
+          volume={muted ? 0 : (clip.volume ?? 1)}
+          style={{ ...mediaStyle, position: "absolute", inset: 0 }}
+        />
       </div>
     );
   }
@@ -340,7 +353,7 @@ export const ShortComposition = ({
         track.visible !== false && Array.isArray(track.clips)
           ? track.clips.map((clip: any) => (
               <Sequence key={clip.id} from={clip.startFrame ?? 0} durationInFrames={Math.max(1, clip.durationFrames ?? 30)}>
-                <ExtraClipLayer clip={clip} />
+                <ExtraClipLayer clip={clip} muted={!!track.muted} />
               </Sequence>
             ))
           : null

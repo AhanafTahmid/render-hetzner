@@ -16,6 +16,7 @@ import type { TimelineItem } from "../buildTimeline";
 import { buildTimeline, timelineDurationFrames } from "../buildTimeline";
 import { BlogTemplatePlayer } from "./BlogTemplatePlayer";
 import { BLOG_TEMPLATE_IDS } from "./blogTemplateIds";
+import { ExtraTracksLayer, type ExtraTrackInput } from "./ExtraTracksLayer";
 
 // ─── Theme color map (blog-to-video themes) ──────────────────────────────────
 
@@ -456,77 +457,6 @@ const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   showEmojis: false,
 };
 
-// Extra track clip for overlay layers
-interface ExtraClipInput {
-  id: string;
-  url: string;
-  type: "image" | "video" | "audio";
-  name: string;
-  startFrame: number;
-  durationFrames: number;
-  volume?: number;
-}
-
-interface ExtraTrackInput {
-  id: string;
-  label: string;
-  clips: ExtraClipInput[];
-  locked?: boolean;
-  visible?: boolean;
-  muted?: boolean;
-}
-
-// ── Sub-components for extra tracks ──
-
-function VideoClipSequence({
-  clip, startFrame, durationFrames, trackZIndex, muted,
-}: {
-  clip: ExtraClipInput; startFrame: number; durationFrames: number;
-  trackZIndex: number; muted: boolean;
-}) {
-  return (
-    <Sequence from={startFrame} durationInFrames={durationFrames}>
-      <AbsoluteFill style={{ zIndex: trackZIndex }}>
-        <OffthreadVideo
-          src={clip.url}
-          pauseWhenBuffering
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-          volume={muted ? 0 : (clip.volume ?? 1)}
-        />
-      </AbsoluteFill>
-    </Sequence>
-  );
-}
-
-function AudioClipSequence({
-  clip, startFrame, durationFrames, muted,
-}: {
-  clip: ExtraClipInput; startFrame: number; durationFrames: number; muted: boolean;
-}) {
-  return (
-    <Sequence from={startFrame} durationInFrames={durationFrames}>
-      <Audio src={clip.url} volume={muted ? 0 : (clip.volume ?? 1)} />
-    </Sequence>
-  );
-}
-
-function ImageClipSequence({
-  clip, startFrame, durationFrames, trackZIndex,
-}: {
-  clip: ExtraClipInput; startFrame: number; durationFrames: number; trackZIndex: number;
-}) {
-  return (
-    <Sequence from={startFrame} durationInFrames={durationFrames}>
-      <AbsoluteFill style={{ zIndex: trackZIndex }}>
-        <Img
-          src={clip.url}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
-      </AbsoluteFill>
-    </Sequence>
-  );
-}
-
 /**
  * An <Img> that survives a broken source. If `candidates[0]` fails to load it
  * advances to the next candidate (the nearest neighbouring clip's image), so a
@@ -646,6 +576,7 @@ function RemotionVideo({
         showWatermark={showWatermark}
         captionStyle={captionStyleProp as Record<string, unknown>}
         captionsVisible={captionsVisible}
+        extraTracks={extraTracks}
         themeId={blogThemeId}
         accentColorOverride={customTemplate?.accentColor}
         bgColorOverride={customTemplate?.bgColor}
@@ -968,61 +899,8 @@ function RemotionVideo({
         );
       })}
 
-      {/* ── Extra overlay tracks (Track 1 renders on top of Track 2, etc.) ── */}
-      {/* Render in reverse order so Track 1 (index 0) is on top */}
-      {[...extraTracks].reverse().map((track, reversedIdx) => {
-        // Skip hidden tracks
-        if (track.visible === false) return null;
-        
-        // Calculate z-index sequentially: Track 1 = highest, Track N = lowest among extra tracks
-        // reversedIdx 0 = last track (z-index 1), reversedIdx n-1 = Track 1 (z-index n)
-        const trackZIndex = reversedIdx + 1;
-        
-        return (Array.isArray(track.clips) ? track.clips : []).map((clip) => {
-          const startFrame = clip.startFrame;
-          const durationFrames = Math.max(1, clip.durationFrames);
-          const muted = !!track.muted;
-          
-          if (clip.type === "video") {
-            return (
-              <VideoClipSequence
-                key={clip.id}
-                clip={clip}
-                startFrame={startFrame}
-                durationFrames={durationFrames}
-                trackZIndex={trackZIndex}
-                muted={muted}
-              />
-            );
-          }
-          
-          if (clip.type === "image") {
-            return (
-              <ImageClipSequence
-                key={clip.id}
-                clip={clip}
-                startFrame={startFrame}
-                durationFrames={durationFrames}
-                trackZIndex={trackZIndex}
-              />
-            );
-          }
-          
-          if (clip.type === "audio") {
-            return (
-              <AudioClipSequence
-                key={clip.id}
-                clip={clip}
-                startFrame={startFrame}
-                durationFrames={durationFrames}
-                muted={muted}
-              />
-            );
-          }
-          
-          return null;
-        });
-      })}
+      {/* ── Extra overlay tracks — Track 1 on top, all above the scene layer ── */}
+      <ExtraTracksLayer extraTracks={extraTracks} />
 
       {/* ── Scene text overlays (title + structured content) ── */}
       {showSceneOverlay && script && script.length > 0 && clipTimings.map((timing, index) => {

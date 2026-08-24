@@ -18,6 +18,7 @@ import { BLOOMBERG_LAYOUT_REGISTRY } from "../remotion/templates/bloomberg/layou
 import { CHRONICLE_LAYOUT_REGISTRY } from "../remotion/templates/chronicle/layouts";
 
 import { SceneDurationInFramesContext } from "../remotion/components/SceneDurationContext";
+import { ExtraTracksLayer, type ExtraTrackInput } from "./ExtraTracksLayer";
 
 const FPS = 30;
 
@@ -314,6 +315,8 @@ interface BlogTemplatePlayerProps extends Record<string, unknown> {
   showWatermark?: boolean;
   captionStyle?: CaptionStyleInput;
   captionsVisible?: boolean;
+  /** Editor overlay tracks. Rendered above the scenes, below the captions. */
+  extraTracks?: ExtraTrackInput[];
   themeId?: string;
   // Custom-theme overrides: reuse `themeId`'s layouts but recolor to a brand.
   accentColorOverride?: string;
@@ -336,6 +339,7 @@ export function BlogTemplatePlayer({
   voiceoverSegments,
   captionStyle,
   captionsVisible = true,
+  extraTracks = [],
   themeId = "whiteboard",
   accentColorOverride,
   bgColorOverride,
@@ -426,9 +430,18 @@ export function BlogTemplatePlayer({
               shorter than the narration instead of parking on its last frame,
               so hand it down explicitly.
             */}
-            <SceneDurationInFramesContext.Provider value={durationFrames}>
-              <LayoutComponent {...finalProps} />
-            </SceneDurationInFramesContext.Provider>
+            {/*
+              A numeric zIndex here makes each scene its own stacking context, so
+              the z-index values layouts use internally (badges at 100, glass
+              panels at 60) stay scene-local. Without it those values escape the
+              <Sequence> and outrank the overlay tracks below, which is what made
+              an image dropped on Track 1/2 disappear behind the scene.
+            */}
+            <AbsoluteFill style={{ zIndex: 0 }}>
+              <SceneDurationInFramesContext.Provider value={durationFrames}>
+                <LayoutComponent {...finalProps} />
+              </SceneDurationInFramesContext.Provider>
+            </AbsoluteFill>
             {seg?.audioUrl && (
               <Audio src={seg.audioUrl} volume={voiceoverVolume} playbackRate={rate} />
             )}
@@ -442,6 +455,11 @@ export function BlogTemplatePlayer({
       )}
 
       {musicUrl && <Audio src={musicUrl} volume={musicVolume} loop playbackRate={rate} />}
+
+      {/* Overlay tracks from the editor timeline — above every scene layout, so
+          an image dropped on Track 1/2 covers the scene rather than hiding
+          behind it. Emitted before the captions so captions stay on top. */}
+      <ExtraTracksLayer extraTracks={extraTracks} rate={rate} />
 
       {captionsVisible && scaledCaptions.length > 0 && (
         <CaptionsOverlay captions={scaledCaptions} captionStyle={captionStyle} />
