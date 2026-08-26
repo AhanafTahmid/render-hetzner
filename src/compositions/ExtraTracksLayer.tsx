@@ -23,6 +23,8 @@ export interface ExtraClipInput {
   name: string;
   startFrame: number;
   durationFrames: number;
+  /** Where the clip begins inside its own file, in frames. See the layer below. */
+  sourceStartFrame?: number;
   volume?: number;
 }
 
@@ -44,8 +46,13 @@ function VideoClipSequence({
   return (
     <Sequence from={startFrame} durationInFrames={durationFrames}>
       <AbsoluteFill style={{ zIndex: trackZIndex }}>
+        {/* startFrom is where the clip begins inside its own file — set by a
+            left-edge trim or a split. Without it a left-trim threw away the
+            tail instead of the head, and both halves of a split replayed the
+            same opening seconds. */}
         <OffthreadVideo
           src={clip.url}
+          startFrom={Math.max(0, Math.round(clip.sourceStartFrame ?? 0))}
           pauseWhenBuffering
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
           volume={muted ? 0 : (clip.volume ?? 1)}
@@ -62,7 +69,7 @@ function AudioClipSequence({
 }) {
   return (
     <Sequence from={startFrame} durationInFrames={durationFrames}>
-      <Audio src={clip.url} volume={muted ? 0 : (clip.volume ?? 1)} />
+      <Audio src={clip.url} startFrom={Math.max(0, Math.round(clip.sourceStartFrame ?? 0))} volume={muted ? 0 : (clip.volume ?? 1)} />
     </Sequence>
   );
 }
