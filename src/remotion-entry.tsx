@@ -100,7 +100,24 @@ const RemotionRoot = () => (
         const fps = 30;
         const st = Number((props as Record<string, unknown>).startTime ?? 0);
         const et = Number((props as Record<string, unknown>).endTime ?? 4);
-        const durationInFrames = Math.max(1, Math.ceil((et - st) * fps));
+        // A short whose main clip has been cut is a list of pieces, and its length
+        // is their sum — not endTime − startTime, which stops being the answer the
+        // moment a piece is trimmed or deleted. Absent (never cut) falls back.
+        const raw = (props as Record<string, unknown>).mainSegments;
+        const parsed = typeof raw === "string"
+          ? (() => { try { return JSON.parse(raw); } catch { return null; } })()
+          : raw;
+        const segSecs = Array.isArray(parsed)
+          ? parsed.reduce(
+              (n: number, sg: unknown) => {
+                const d = Number((sg as Record<string, unknown>)?.duration);
+                return n + (d > 0 ? d : 0);
+              },
+              0
+            )
+          : 0;
+        const seconds = segSecs > 0 ? segSecs : et - st;
+        const durationInFrames = Math.max(1, Math.ceil(seconds * fps));
         return { durationInFrames, fps };
       }}
       durationInFrames={120}

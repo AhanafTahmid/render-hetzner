@@ -1,35 +1,30 @@
-// Extracted from shortshero/components/RemotionShortPlayer.tsx (the editor
-// preview). Only the Remotion composition + its helpers are vendored here so
-// the export matches the preview exactly. The Player wrapper is editor-only.
-// Keep in sync with that file.
+/**
+ * GENERATED — do not edit.
+ *
+ * Written by shortshero/scripts/sync-render-composition.mjs from
+ * components/RemotionShortPlayer.tsx, the editor preview. Editing this file by
+ * hand is how the export drifted away from the preview in the first place.
+ *
+ * To change what the export renders, change the preview and re-run:
+ *   pnpm sync:render      (then rebuild and redeploy the render server)
+ */
 import React from "react";
 import {
   AbsoluteFill,
-  Audio,
   Img,
   OffthreadVideo,
-  useCurrentFrame,
-  useVideoConfig,
   Sequence,
   interpolate,
+  useCurrentFrame,
+  useVideoConfig,
 } from "remotion";
+import { splitBox, mainBox, activeSplitAt, mainObjectPosition } from "../shorts/splitLayout";
+import { captionGroupStyle, captionWordStyle, type CaptionRenderStyle } from "../shorts/captionRender";
+// Every caption typeface a preset can name. The container installs no system
+// fonts, so without this every preset renders in the same fallback face.
+import "../captionFonts";
 
-
-export interface CaptionStyle {
-  fontSize?: number;
-  color?: string;
-  backgroundColor?: string;
-  bgOpacity?: number;
-  inactiveColor?: string;
-  inactiveBackgroundColor?: string;
-  fontFamily?: string;
-  fontWeight?: string;
-  textTransform?: "uppercase" | "lowercase" | "capitalize" | "none";
-  borderRadius?: number;
-  padding?: string;
-  textShadow?: string;
-  outlineColor?: string;
-  outlineWidth?: number;
+export interface CaptionStyle extends CaptionRenderStyle {
   positionBottom?: number;
   wordsPerBatch?: number;
   layout?: "inline" | "stacked";
@@ -86,30 +81,39 @@ function WatermarkOverlay({ frame, totalFrames, fps }: { frame: number; totalFra
   );
 }
 
+/**
+ * Fallback for a short whose stored captionStyle is empty or unparseable.
+ * Mirrors DEFAULT_CAPTION_STYLE in lib/captionPresets.ts and the copy in
+ * render/src/compositions/ShortVideo.tsx. All three used to disagree — this one
+ * and the render's said black-on-yellow uppercase 900, the app's said
+ * white-on-transparent 700 — so a short with no stored style looked nothing like
+ * one saved with the "default" preset.
+ */
 const DEFAULT_CAPTION_STYLE: CaptionStyle = {
-  fontSize: 88,
-  color: "#000000",
-  backgroundColor: "#FFFF00",
-  inactiveColor: "rgba(255, 255, 255, 0.6)",
+  fontSize: 84,
+  color: "#FFFFFF",
+  backgroundColor: "#000000",
+  bgOpacity: 0,
+  inactiveColor: "rgba(255,255,255,0.62)",
   inactiveBackgroundColor: "transparent",
+  fontFamily: `"Inter", system-ui, -apple-system, sans-serif`,
   fontWeight: "900",
-  textTransform: "uppercase",
-  borderRadius: 15,
-  padding: "15px 30px",
-  textShadow: "0 10px 30px rgba(0,0,0,0.5)",
+  textTransform: "none",
+  outlineColor: "#000000",
+  outlineWidth: 7,
+  textShadow: "0 6px 18px rgba(0,0,0,0.45)",
+  highlight: "color",
+  activeScale: 1.12,
+  letterSpacing: 0,
+  borderRadius: 16,
+  padding: "10px 22px",
+  positionBottom: 18,
+  wordsPerBatch: 3,
+  layout: "inline",
 };
 
-function hexToRgba(hex: string, opacity: number): string {
-  const clean = hex.replace("#", "");
-  if (clean.length < 6) return hex;
-  const r = parseInt(clean.slice(0, 2), 16);
-  const g = parseInt(clean.slice(2, 4), 16);
-  const b = parseInt(clean.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
-}
-
 // ── Extra track clip renderer ─────────────────────────────────────────────────
-function ExtraClipLayer({ clip, muted }: { clip: any; muted: boolean }) {
+function ExtraClipLayer({ clip }: { clip: any }) {
   const frame = useCurrentFrame();
   const N = Math.max(1, clip.durationFrames ?? 30);
   const effect = clip.effect || "none";
@@ -218,7 +222,14 @@ function ExtraClipLayer({ clip, muted }: { clip: any; muted: boolean }) {
   const posX: number = clip.overlayX ?? 0;
   const posY: number = clip.overlayY ?? 0;
 
-  const containerStyle: React.CSSProperties = overlayScale < 0.999
+  // A split cutaway owns half the frame outright — overlayScale/X/Y describe a
+  // centred picture-in-picture box and cannot express "full width, half height,
+  // anchored to one edge", so the split case bypasses them entirely.
+  const isSplit = clip.split === "top" || clip.split === "bottom";
+
+  const containerStyle: React.CSSProperties = isSplit
+    ? splitBox(clip.split)
+    : overlayScale < 0.999
     ? {
         position: "absolute",
         width: `${overlayScale * 100}%`,
@@ -237,21 +248,15 @@ function ExtraClipLayer({ clip, muted }: { clip: any; muted: boolean }) {
 
   if (!clip.url?.startsWith("http")) return null;
 
-  // An audio clip has no picture. Before this it fell through to the <Img>
-  // branch below, which pointed an image element at an mp3 — a decode failure
-  // that Remotion raises as a render error, so one audio overlay could fail the
-  // whole export.
-  if (clip.type === "audio") {
-    return <Audio src={clip.url} volume={muted ? 0 : (clip.volume ?? 1)} />;
-  }
-
   if (clip.type === "video") {
     return (
       <div style={containerStyle}>
+        {/* startFrom is where the clip begins inside its own file — set by a
+            left-edge trim or a split. Without it both halves of a split clip
+            replayed the same opening seconds. */}
         <OffthreadVideo
           src={clip.url}
-          volume={muted ? 0 : (clip.volume ?? 1)}
-          style={{ ...mediaStyle, position: "absolute", inset: 0 }}
+          startFrom={Math.max(0, Math.round(clip.sourceStartFrame ?? 0))} style={{ ...mediaStyle, position: "absolute", inset: 0 }}
         />
       </div>
     );
@@ -273,6 +278,9 @@ export const ShortComposition = ({
   captionStyle = DEFAULT_CAPTION_STYLE,
   showWatermark = false,
   extraTracks,
+  faceFocusY,
+  mainSegments,
+  hideMainVideo,
 }: any) => {
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -282,26 +290,64 @@ export const ShortComposition = ({
   const et = Number(endTime ?? 4);
   const durationInFrames = Math.max(1, Math.ceil((et - st) * fps));
 
-  const src = (croppedVideoUrl?.startsWith("http") ? croppedVideoUrl : null) || (videoUrl?.startsWith("http") ? videoUrl : null) || "";
-  const fromFrame = croppedVideoUrl?.startsWith("http") ? 0 : Math.floor(st * fps);
-  const toFrame = croppedVideoUrl?.startsWith("http") ? durationInFrames : Math.ceil(et * fps);
+  // Accept both remote URLs and locally prefetched blob: URLs
+  const isPlayable = (u?: string) => !!u && (u.startsWith("http") || u.startsWith("blob:"));
+  // An empty src renders the black fill below, which is what the Video track eye
+  // means. It used to be expressed in the preview by withholding croppedVideoUrl,
+  // which fell through to the RAW source instead of hiding anything — so the
+  // preview showed an uncropped speaker and the export showed a cropped one.
+  const src = hideMainVideo
+    ? ""
+    : (isPlayable(croppedVideoUrl) ? croppedVideoUrl : null) || (isPlayable(videoUrl) ? videoUrl : null) || "";
+  // Only the face-tracked clip is 9:16 like the composition, so only it gets
+  // cropped vertically by a half-height box. The raw source is landscape: it
+  // fills a half-height box edge to edge and loses width, not height.
+  const usesPortraitSource = isPlayable(croppedVideoUrl);
+  const fromFrame = isPlayable(croppedVideoUrl) ? 0 : Math.floor(st * fps);
   const currentTime = st + frame / fps;
+
+  /**
+   * The main track as a list of pieces, in clip-relative seconds.
+   *
+   * One entry until the clip is split. Each piece names where it starts INSIDE
+   * the short and how long it runs, so a split produces two pieces that resume
+   * one another instead of two copies of the same opening — the same idea as
+   * `sourceStartFrame` on an overlay clip.
+   *
+   * Clip-relative rather than source-absolute on purpose: the face-tracked clip
+   * (`croppedVideoUrl`) is already trimmed and starts at 0, while the raw source
+   * starts at `startTime`. `fromFrame` below already carries that difference, so
+   * offsets measured from the start of the short work for both.
+   */
+  const segments: { start: number; duration: number }[] = (() => {
+    const raw: unknown = typeof mainSegments === "string"
+      ? (() => { try { return JSON.parse(mainSegments); } catch { return null; } })()
+      : mainSegments;
+    const list = Array.isArray(raw)
+      ? (raw as Array<Record<string, unknown>>)
+          .map((sg) => ({ start: Number(sg?.start) || 0, duration: Number(sg?.duration) }))
+          .filter((sg) => sg.duration > 0)
+      : [];
+    return list.length ? list : [{ start: 0, duration: et - st }];
+  })();
+
+  /** Each piece's slot on the timeline and its window inside the source. */
+  const placedSegments = segments.reduce<{ from: number; durF: number; segFrom: number }[]>(
+    (acc, seg) => {
+      const durF = Math.max(1, Math.round(seg.duration * fps));
+      const prev = acc[acc.length - 1];
+      acc.push({
+        from: prev ? prev.from + prev.durF : 0,
+        durF,
+        segFrom: fromFrame + Math.round(seg.start * fps),
+      });
+      return acc;
+    },
+    []
+  );
 
   const style = { ...DEFAULT_CAPTION_STYLE, ...captionStyle };
   const batchSize = (style as CaptionStyle).wordsPerBatch || 3;
-  const posBottom = (style as CaptionStyle).positionBottom ?? 10;
-  const layout = (style as CaptionStyle).layout ?? "inline";
-
-  const activeBg = (() => {
-    const opacity = (style as CaptionStyle).bgOpacity;
-    if (opacity === 0) return "transparent";
-    const bg = style.backgroundColor;
-    if (!bg || bg === "transparent") return "transparent";
-    if (opacity !== undefined && opacity < 1 && bg.startsWith("#")) return hexToRgba(bg, opacity);
-    return bg;
-  })();
-
-  const hasWordBg = activeBg !== "transparent";
 
   let activeGroup: { words: any[]; start: number; end: number } | null = null;
   if (captions) {
@@ -330,30 +376,47 @@ export const ShortComposition = ({
     return Array.isArray(extraTracks) ? extraTracks : [];
   })();
 
+  // Which half of the frame the speaker keeps, this frame. Recomputed per frame
+  // because a cutaway covers only part of the clip.
+  const activeSplit = activeSplitAt(parsedExtraTracks, frame);
+
   return (
     <AbsoluteFill className="bg-black">
-      {/* Main video */}
-      <Sequence from={0} durationInFrames={durationInFrames}>
-        <div style={{ position: "absolute", inset: 0 }}>
-          {src ? (
-            <OffthreadVideo
-              src={src}
-              startFrom={fromFrame}
-              endAt={toFrame}
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            />
-          ) : (
-            <AbsoluteFill style={{ backgroundColor: "#000" }} />
-          )}
-        </div>
-      </Sequence>
+      {/* Main video — one Sequence per piece. Unsplit, that is a single piece
+          spanning the whole short, i.e. exactly what this used to render. */}
+      {placedSegments.map(({ from, durF, segFrom }, i) => {
+          return (
+            <Sequence key={`main-${i}`} from={from} durationInFrames={durF}>
+              {/* Shrinks to half the frame while a split cutaway is on screen, so
+                  the speaker and the B-roll each get full width at half height. */}
+              <div style={mainBox(activeSplit)}>
+                {src ? (
+                  <OffthreadVideo
+                    src={src}
+                    startFrom={segFrom}
+                    endAt={Math.max(segFrom + 1, segFrom + durF)}                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                      // Aim the half-height window at the face; a no-op when no
+                      // cutaway is on screen.
+                      objectPosition: mainObjectPosition(activeSplit, faceFocusY, usesPortraitSource),
+                    }}
+                  />
+                ) : (
+                  <AbsoluteFill style={{ backgroundColor: "#000" }} />
+                )}
+              </div>
+            </Sequence>
+          );
+      })}
 
       {/* Extra tracks rendered on top of base video (reversed so track[0] is topmost) */}
       {[...parsedExtraTracks].reverse().map((track: any) =>
         track.visible !== false && Array.isArray(track.clips)
           ? track.clips.map((clip: any) => (
               <Sequence key={clip.id} from={clip.startFrame ?? 0} durationInFrames={Math.max(1, clip.durationFrames ?? 30)}>
-                <ExtraClipLayer clip={clip} muted={!!track.muted} />
+                <ExtraClipLayer clip={clip} />
               </Sequence>
             ))
           : null
@@ -362,44 +425,16 @@ export const ShortComposition = ({
       {/* Captions */}
       {activeGroup && !(style as CaptionStyle).disabled && (
         <AbsoluteFill>
-          <div style={{
-            position: "absolute",
-            bottom: `${posBottom}%`,
-            left: 80,
-            right: 80,
-            display: "flex",
-            flexWrap: layout === "stacked" ? "nowrap" : "wrap",
-            flexDirection: layout === "stacked" ? "column" : "row",
-            justifyContent: "center",
-            alignItems: "center",
-            gap: layout === "stacked" ? 12 : 20,
-          }}>
-            {activeGroup.words.map((w: any, i: number) => {
-              const isActive = currentTime >= w.start && currentTime <= w.end;
-              return (
-                <span key={i} style={{
-                  display: "inline-block",
-                  fontSize: isActive ? `${(style.fontSize || 88) * 1.2}px` : `${style.fontSize}px`,
-                  lineHeight: "1",
-                  fontFamily: style.fontFamily || "inherit",
-                  fontWeight: style.fontWeight,
-                  textTransform: style.textTransform,
-                  color: isActive ? style.color : style.inactiveColor,
-                  backgroundColor: hasWordBg
-                    ? (isActive ? activeBg : (style.inactiveBackgroundColor && style.inactiveBackgroundColor !== "transparent" ? style.inactiveBackgroundColor : activeBg))
-                    : undefined,
-                  padding: hasWordBg ? style.padding : undefined,
-                  borderRadius: hasWordBg ? `${style.borderRadius}px` : undefined,
-                  transform: isActive ? "scale(1.1)" : "scale(1)",
-                  opacity: isActive ? 1 : 0.6,
-                  boxShadow: hasWordBg && isActive ? "0 4px 12px rgba(0,0,0,0.3)" : "none",
-                  textShadow: !hasWordBg ? (style.textShadow || undefined) : undefined,
-                  zIndex: isActive ? 10 : 1,
-                }}>
-                  {w.text || w.punctuated_word || w.word}
-                </span>
-              );
-            })}
+          {/* Styling lives in lib/captionRender.ts, shared verbatim with the
+              render server, so this preview cannot drift from the export.
+              While a cutaway is up the captions move to the split seam — at the
+              normal bottom position they sit on top of the stock footage. */}
+          <div style={captionGroupStyle(style, activeSplit !== null)}>
+            {activeGroup.words.map((w: any, i: number) => (
+              <span key={i} style={captionWordStyle(style, currentTime >= w.start && currentTime <= w.end)}>
+                {w.text || w.punctuated_word || w.word}
+              </span>
+            ))}
           </div>
         </AbsoluteFill>
       )}
@@ -411,3 +446,5 @@ export const ShortComposition = ({
     </AbsoluteFill>
   );
 };
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
