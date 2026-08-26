@@ -17,6 +17,12 @@ import { buildTimeline, timelineDurationFrames } from "../buildTimeline";
 import { BlogTemplatePlayer } from "./BlogTemplatePlayer";
 import { BLOG_TEMPLATE_IDS } from "./blogTemplateIds";
 import { ExtraTracksLayer, type ExtraTrackInput } from "./ExtraTracksLayer";
+import "@fontsource/patrick-hand";
+// Every caption typeface a preset can name, plus the shared per-word styling —
+// one implementation for the preview and the exported MP4.
+import "../captionFonts";
+import { DEFAULT_CAPTION_STYLE as SHARED_DEFAULT_CAPTION_STYLE } from "../captionDefaults";
+import { captionWordStyle, type CaptionRenderStyle } from "../captionRender";
 
 // ─── Theme color map (blog-to-video themes) ──────────────────────────────────
 
@@ -427,7 +433,7 @@ function computeEffectTransforms(
 }
 
 // Caption style interface (must match editor-utils.ts)
-interface CaptionStyle {
+interface CaptionStyle extends CaptionRenderStyle {
   preset: string;
   fontSize: number;
   fontWeight: number;
@@ -443,19 +449,14 @@ interface CaptionStyle {
   captionBgOpacity?: number;
 }
 
-const DEFAULT_CAPTION_STYLE: CaptionStyle = {
-  preset: "default",
-  fontSize: 72,
-  fontWeight: 700,
-  fontFamily: "system-ui",
-  textTransform: "none",
-  activeColor: "#FFFFFF",
-  inactiveColor: "#9CA3AF",
-  positionBottom: 5,
-  wordsPerBatch: 1,
-  layout: "inline",
-  showEmojis: false,
-};
+/**
+ * One shared default — mirrored from the app's lib/captions.ts via
+ * ../captionDefaults. The copy that used to sit here said `system-ui` and
+ * `wordsPerBatch: 1`, so a video with no stored caption style exported in a
+ * generic sans one word at a time while its editor preview showed the comic face
+ * four words at a time.
+ */
+const DEFAULT_CAPTION_STYLE = SHARED_DEFAULT_CAPTION_STYLE as CaptionStyle;
 
 /**
  * An <Img> that survives a broken source. If `candidates[0]` fails to load it
@@ -971,24 +972,21 @@ function RemotionVideo({
                   {words.map((word, idx) => {
                     const isActive = word.isActive;
                     return (
-                      <span
-                        key={idx}
-                        style={{
-                          color: isActive ? captionStyle.activeColor : captionStyle.inactiveColor,
-                          fontSize: isActive
-                            ? `calc(${captionStyle.fontSize}px * 1.06)`
-                            : `${captionStyle.fontSize}px`,
-                          fontWeight: captionStyle.fontWeight,
-                          fontFamily: captionStyle.fontFamily,
-                          textShadow: hasBg ? "none" : (isActive
-                            ? "2px 2px 8px rgba(0,0,0,0.9), 0 0 20px rgba(0,0,0,0.5)"
-                            : "1px 1px 4px rgba(0,0,0,0.7)"),
-                          display: isStacked ? "block" : "inline",
-                          verticalAlign: "baseline",
-                        }}
-                      >
-                        {transformText(word.text)}{!isStacked && idx < words.length - 1 ? " " : ""}
-                      </span>
+                      <React.Fragment key={idx}>
+                        <span
+                          style={{
+                            ...captionWordStyle(captionStyle, isActive, hasBg),
+                            ...(isStacked ? { display: "block" } : null),
+                          }}
+                        >
+                          {transformText(word.text)}
+                        </span>
+                        {/* The space is a sibling now, not the last character inside
+                            the span: each word is an inline-BLOCK (it reserves the room
+                            its highlight pop needs — see captionRender.ts), and a
+                            trailing space inside that box would be trimmed. */}
+                        {!isStacked && idx < words.length - 1 ? " " : ""}
+                      </React.Fragment>
                     );
                   })}
                 </div>

@@ -19,6 +19,11 @@ import { CHRONICLE_LAYOUT_REGISTRY } from "../remotion/templates/chronicle/layou
 
 import { SceneDurationInFramesContext } from "../remotion/components/SceneDurationContext";
 import { ExtraTracksLayer, type ExtraTrackInput } from "./ExtraTracksLayer";
+import "@fontsource/patrick-hand";
+// Every caption typeface a preset can name, plus the shared per-word styling.
+import "../captionFonts";
+import { captionWordStyle, type CaptionRenderStyle } from "../captionRender";
+import { DEFAULT_CAPTION_STYLE as SHARED_DEFAULT_CAPTION_STYLE, DEFAULT_WORDS_PER_BATCH } from "../captionDefaults";
 
 const FPS = 30;
 
@@ -173,7 +178,7 @@ interface CaptionWord {
   text: string;
 }
 
-interface CaptionStyleInput {
+interface CaptionStyleInput extends CaptionRenderStyle {
   fontSize?: number;
   fontWeight?: number;
   fontFamily?: string;
@@ -197,17 +202,35 @@ function CaptionsOverlay({
   const frame = useCurrentFrame();
   const fps = FPS;
 
-  const fontSize = cs?.fontSize ?? 72;
-  const fontWeight = cs?.fontWeight ?? 700;
-  const fontFamily = cs?.fontFamily ?? "system-ui";
-  const activeColor = cs?.activeColor ?? "#FFFFFF";
-  const inactiveColor = cs?.inactiveColor ?? "#9CA3AF";
-  const positionBottom = cs?.positionBottom ?? 5;
-  const wordsPerBatch = cs?.wordsPerBatch ?? 1;
+  // Fallbacks come from the one shared default (../captionDefaults, mirrored from
+  // the app's lib/captions.ts) rather than being written out again here. The
+  // literals that used to sit here said system-ui at one word per batch, so a
+  // video with no stored style exported in a generic sans one word at a time
+  // while its editor preview showed the comic face four words at a time.
+  const fontSize = cs?.fontSize ?? SHARED_DEFAULT_CAPTION_STYLE.fontSize;
+  const fontWeight = cs?.fontWeight ?? SHARED_DEFAULT_CAPTION_STYLE.fontWeight;
+  const fontFamily = cs?.fontFamily ?? SHARED_DEFAULT_CAPTION_STYLE.fontFamily;
+  const activeColor = cs?.activeColor ?? SHARED_DEFAULT_CAPTION_STYLE.activeColor;
+  const inactiveColor = cs?.inactiveColor ?? SHARED_DEFAULT_CAPTION_STYLE.inactiveColor;
+  const positionBottom = cs?.positionBottom ?? SHARED_DEFAULT_CAPTION_STYLE.positionBottom;
+  const wordsPerBatch = cs?.wordsPerBatch ?? DEFAULT_WORDS_PER_BATCH;
   const textTransform = cs?.textTransform ?? "none";
   const isStacked = cs?.layout === "stacked";
   const bgColor = cs?.captionBgColor ?? "#000000";
   const bgOpacity = cs?.captionBgOpacity ?? 0;
+
+  // The resolved values in the shape the shared per-word styling reads. `cs` is
+  // spread first so a preset's stroke, highlight and pop come through; the
+  // fallbacks above win over an absent field, not over a set one.
+  const wordStyle = {
+    ...cs,
+    fontSize,
+    fontWeight,
+    fontFamily,
+    activeColor,
+    inactiveColor,
+    textTransform,
+  };
 
   const currentTimeMs = (frame / fps) * 1000;
 
@@ -275,24 +298,21 @@ function CaptionsOverlay({
           }}
         >
           {words.map(({ text, isActive }, idx) => (
-            <span
-              key={idx}
-              style={{
-                color: isActive ? activeColor : inactiveColor,
-                fontSize: isActive ? `calc(${fontSize}px * 1.06)` : `${fontSize}px`,
-                fontWeight,
-                fontFamily,
-                textShadow: hasBg
-                  ? "none"
-                  : isActive
-                  ? "2px 2px 8px rgba(0,0,0,0.9), 0 0 20px rgba(0,0,0,0.5)"
-                  : "1px 1px 4px rgba(0,0,0,0.7)",
-                display: isStacked ? "block" : "inline",
-              }}
-            >
-              {transformText(text)}
+            <React.Fragment key={idx}>
+              <span
+                style={{
+                  ...captionWordStyle(wordStyle, isActive, hasBg),
+                  ...(isStacked ? { display: "block" } : null),
+                }}
+              >
+                {transformText(text)}
+              </span>
+              {/* The space is a sibling now, not the last character inside the
+                  span: each word is an inline-BLOCK (it reserves the room its
+                  highlight pop needs — see captionRender.ts), and a trailing space
+                  inside that box would be trimmed. */}
               {!isStacked && idx < words.length - 1 ? " " : ""}
-            </span>
+            </React.Fragment>
           ))}
         </div>
       </div>

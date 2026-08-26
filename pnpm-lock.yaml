@@ -14,12 +14,18 @@ importers:
       '@aws-sdk/lib-storage':
         specifier: ^3.1043.0
         version: 3.1090.0(@aws-sdk/client-s3@3.1090.0)
+      '@fontsource/anton':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/archivo-black':
         specifier: ^5.2.8
         version: 5.2.8
       '@fontsource/arimo':
         specifier: ^5.2.8
         version: 5.2.8
+      '@fontsource/bebas-neue':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/cinzel-decorative':
         specifier: ^5.2.8
         version: 5.2.8
@@ -38,6 +44,9 @@ importers:
       '@fontsource/lora':
         specifier: ^5.2.8
         version: 5.2.8
+      '@fontsource/luckiest-guy':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/merriweather':
         specifier: ^5.2.11
         version: 5.2.11
@@ -50,6 +59,9 @@ importers:
       '@fontsource/patrick-hand':
         specifier: ^5.2.8
         version: 5.2.8
+      '@fontsource/permanent-marker':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/pirata-one':
         specifier: ^5.2.8
         version: 5.2.8
@@ -71,6 +83,9 @@ importers:
       '@fontsource/source-serif-4':
         specifier: ^5.2.9
         version: 5.2.9
+      '@fontsource/space-mono':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@remotion/cli':
         specifier: 4.0.459
         version: 4.0.459(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -386,11 +401,17 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@fontsource/anton@5.3.0':
+    resolution: {integrity: sha512-OR1D5n124n2XRs66SbX7IjcOSptljEJE8FcDNnlni2y1/M6KpTx7cU2PIWzTSsBj4WFkHPw24On8qw3qkQZuTw==}
+
   '@fontsource/archivo-black@5.2.8':
     resolution: {integrity: sha512-3zNj/o9LzWyDl/UEpY5IOHpAQyUtFr3hQaFS7NSKwCLLkXOfH/CMCt1L2b2Z+OF25OURtOYenCadgAebALz7/A==}
 
   '@fontsource/arimo@5.2.8':
     resolution: {integrity: sha512-EGB/l4PhYsxJbskePrgFQKM3Ob+x3Xr+VZDuSMR2XNVQYhx8t5zIfiMxCLLbgBPkY2qeXGfbyrXeAOEGl1lOSA==}
+
+  '@fontsource/bebas-neue@5.3.0':
+    resolution: {integrity: sha512-nCxMEb9Bg9sjNWm9TIOsvHKDMLRUfEZPWpLgYu6m9KavZZVSA/WoHzI5wROwqA+eNwEi/PNBAcB5Co7HA3S0Cw==}
 
   '@fontsource/cinzel-decorative@5.2.8':
     resolution: {integrity: sha512-BtrvcprcCd0DyAcIXZRohfMyh+n/MwNvmhmAZ0kXDe9T1w2XSOodb3RNoD1uHm3TlGw7fjTU0YepgAQbPW0sFw==}
@@ -410,6 +431,9 @@ packages:
   '@fontsource/lora@5.2.8':
     resolution: {integrity: sha512-AQlfsHw4TP1x/eb2IZ6VjQ70ctKa39m9JN9A4zlvDOeKYLrCs+GaYIEQ86Y6YfSPGHn01bErXkRcyktOW0LOPQ==}
 
+  '@fontsource/luckiest-guy@5.3.0':
+    resolution: {integrity: sha512-wCtuVkExxmKeW0FngmKVTcCK9T0elvjoP4/ZZaINqsUjlk9CB17Rr9FQ6pIDlN4nzouDMGSuqYvge3VoKqslPA==}
+
   '@fontsource/merriweather@5.2.11':
     resolution: {integrity: sha512-ZiIMeUh5iT8d73o6xlSF8GKgjV5pgiFrufYc5jZTVAfExtWKqM2vQHnsqXSFMv4ELhAcjt6Vf+5T3oVGXhAizQ==}
 
@@ -421,6 +445,9 @@ packages:
 
   '@fontsource/patrick-hand@5.2.8':
     resolution: {integrity: sha512-FZx34VLuiF+Pjv/A/m1bTxjR6hAvmL6vdCp62uypVdgFvSrPrBOxX+vCXVy8lfNVFqvKfm/ghun+aaYVYqfBEg==}
+
+  '@fontsource/permanent-marker@5.3.0':
+    resolution: {integrity: sha512-ZO/NtYW4SCc/iY8N3dmjWyDITcXJ/vhWZFgnwRcvzwCKKnScMrM/a2/6VHlsjCVuIgmPzNrCFbedEYhv+/jJBg==}
 
   '@fontsource/pirata-one@5.2.8':
     resolution: {integrity: sha512-hl3Zqt6mgP+jstHnv2qYc2xQdYM1DSYrpSU9bpS1fYExoGFgJJNbXTPBQ9XivNk9RCKkibhou3iqoOZQOXM48w==}
@@ -442,6 +469,9 @@ packages:
 
   '@fontsource/source-serif-4@5.2.9':
     resolution: {integrity: sha512-er/Pym9emsEVJNf947umJ4kXarXfsiN6CN7kTYinefKRaHLwiquiiHOZvKvxWgkV8JMCf3pV3g0NcsPFpVCH9w==}
+
+  '@fontsource/space-mono@5.3.0':
+    resolution: {integrity: sha512-FrpBMOVWn3PRdRHlrZWC55X3kZG/2BTH7SM5ZyS/bky3iKya2BturI5lk+t0RoDQL2JyHzURsVq/EisCsxpI5A==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -2150,9 +2180,13 @@ snapshots:
   '@esbuild/win32-x64@0.25.0':
     optional: true
 
+  '@fontsource/anton@5.3.0': {}
+
   '@fontsource/archivo-black@5.2.8': {}
 
   '@fontsource/arimo@5.2.8': {}
+
+  '@fontsource/bebas-neue@5.3.0': {}
 
   '@fontsource/cinzel-decorative@5.2.8': {}
 
@@ -2166,6 +2200,8 @@ snapshots:
 
   '@fontsource/lora@5.2.8': {}
 
+  '@fontsource/luckiest-guy@5.3.0': {}
+
   '@fontsource/merriweather@5.2.11': {}
 
   '@fontsource/montserrat@5.2.8': {}
@@ -2173,6 +2209,8 @@ snapshots:
   '@fontsource/oswald@5.2.8': {}
 
   '@fontsource/patrick-hand@5.2.8': {}
+
+  '@fontsource/permanent-marker@5.3.0': {}
 
   '@fontsource/pirata-one@5.2.8': {}
 
@@ -2187,6 +2225,8 @@ snapshots:
   '@fontsource/source-sans-3@5.2.9': {}
 
   '@fontsource/source-serif-4@5.2.9': {}
+
+  '@fontsource/space-mono@5.3.0': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
