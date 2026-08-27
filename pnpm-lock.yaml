@@ -23,6 +23,36 @@ importers:
       '@fontsource/arimo':
         specifier: ^5.2.8
         version: 5.2.8
+      '@fontsource/baloo-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-bhai-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-bhaijaan-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-bhaina-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-chettan-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-da-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-paaji-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-tamma-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-tammudu-2':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/baloo-thambi-2':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/bebas-neue':
         specifier: ^5.3.0
         version: 5.3.0
@@ -32,6 +62,9 @@ importers:
       '@fontsource/fira-code':
         specifier: ^5.2.7
         version: 5.2.7
+      '@fontsource/gaegu':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/im-fell-english':
         specifier: ^5.2.6
         version: 5.2.6
@@ -41,6 +74,9 @@ importers:
       '@fontsource/inter':
         specifier: ^5.2.8
         version: 5.2.8
+      '@fontsource/itim':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@fontsource/lora':
         specifier: ^5.2.8
         version: 5.2.8
@@ -84,6 +120,9 @@ importers:
         specifier: ^5.2.9
         version: 5.2.9
       '@fontsource/space-mono':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource/zen-maru-gothic':
         specifier: ^5.3.0
         version: 5.3.0
       '@remotion/cli':
@@ -410,6 +449,36 @@ packages:
   '@fontsource/arimo@5.2.8':
     resolution: {integrity: sha512-EGB/l4PhYsxJbskePrgFQKM3Ob+x3Xr+VZDuSMR2XNVQYhx8t5zIfiMxCLLbgBPkY2qeXGfbyrXeAOEGl1lOSA==}
 
+  '@fontsource/baloo-2@5.3.0':
+    resolution: {integrity: sha512-CBuxZ27jvMmD5+KaaPkMWv/yjdRNppVAd5/002yAyvyQyLNL3aZCbkx6gbAT/bjxPd1A0VMdDQjfcELI8chccQ==}
+
+  '@fontsource/baloo-bhai-2@5.3.0':
+    resolution: {integrity: sha512-cc0fmUoSMZNN0Z8g7wYvJ3e5VTBkF27uvV63EC9YDXA9ry5tm5jtQY/ohBQeJo+a9C1wBt3sLE3k4YpQvjb78w==}
+
+  '@fontsource/baloo-bhaijaan-2@5.3.0':
+    resolution: {integrity: sha512-XW/B74qBKG8g+k7qOeif74by3YarbCVimDZOTjWuam+2kxilAP4blrCB/pcLLFzlWqTOw/RqETolzXT1ETmirw==}
+
+  '@fontsource/baloo-bhaina-2@5.3.0':
+    resolution: {integrity: sha512-2+IkHb1dEmm+TL7s9AtxlTzZRO46KkBr9hWsNaJfBGeRGTcbmpSNElRbIqGB4AgscXvvH02ipatVFA4EblabFQ==}
+
+  '@fontsource/baloo-chettan-2@5.3.0':
+    resolution: {integrity: sha512-U1c5uoTYS6mv5DNLocRCfi5acW7sRgcyv8Og58Wxq6ikhl0cZHBDfTGpXKieaEp2oikF4xxNH07XkJIj5A31Fg==}
+
+  '@fontsource/baloo-da-2@5.3.0':
+    resolution: {integrity: sha512-jujnLa2d6xPt4HGmWf8/aoWgV2BC9CSyrx5wF3KUFzbNOxxUndQ+0IPKMk723LVGmJcALcexab5MK2KBEGsdew==}
+
+  '@fontsource/baloo-paaji-2@5.3.0':
+    resolution: {integrity: sha512-F9+HBnhJ1KuBG3MYz0h+aYd+/rbidZxOABdchCgpSEerqIAqMFpszjbJg1SAdSDmwZgyXlcKsKjIUdelIQrUBg==}
+
+  '@fontsource/baloo-tamma-2@5.3.0':
+    resolution: {integrity: sha512-W3IyPtKTy0+pcapAHSAnlQncSeOjrU5DlsQv1JtWKMekqMT0svVb86Da2lp1bfScLfNoEGh37tNN0tcTjlifAg==}
+
+  '@fontsource/baloo-tammudu-2@5.3.0':
+    resolution: {integrity: sha512-MORjTl3uBbiUXNUUKbPtLi+J6NdJGM9KfpDN0oNOh5Of58n1gzhb0VwEJWIWjicM8RrVwYacacGlLFBg4dRVjw==}
+
+  '@fontsource/baloo-thambi-2@5.3.0':
+    resolution: {integrity: sha512-xvoqRHd7tvbEBrwrkhI8Cek4K+LlGkyrnwTS5YebEUPu/mUR7YdeUl/BQAfbHCUf3N6TmCz8/tfwiIFWqSsrhg==}
+
   '@fontsource/bebas-neue@5.3.0':
     resolution: {integrity: sha512-nCxMEb9Bg9sjNWm9TIOsvHKDMLRUfEZPWpLgYu6m9KavZZVSA/WoHzI5wROwqA+eNwEi/PNBAcB5Co7HA3S0Cw==}
 
@@ -419,6 +488,9 @@ packages:
   '@fontsource/fira-code@5.2.7':
     resolution: {integrity: sha512-tnB9NNund9TwIym8/7DMJe573nlPEQb+fKUV5GL8TBYXjIhDvL0D7mgmNVNQUPhXp+R7RylQeiBdkA4EbOHPGQ==}
 
+  '@fontsource/gaegu@5.3.0':
+    resolution: {integrity: sha512-eSVEXay02/DAB5BtH/gpsujvpT78EjO6XVuNA1ap1G+xvr3zokU2HoLoaW+CfzykRuVgDQ2oZ1oe7VAlmGZt/A==}
+
   '@fontsource/im-fell-english-sc@5.2.6':
     resolution: {integrity: sha512-+uVXYFiAURkyvKKbkN/DyOs2PNIVt+/pIyax8FpVppxgpU676gRFp7eAUxdKBTPCT0zhM8UFaZ+IhCza0Vpl7w==}
 
@@ -427,6 +499,9 @@ packages:
 
   '@fontsource/inter@5.2.8':
     resolution: {integrity: sha512-P6r5WnJoKiNVV+zvW2xM13gNdFhAEpQ9dQJHt3naLvfg+LkF2ldgSLiF4T41lf1SQCM9QmkqPTn4TH568IRagg==}
+
+  '@fontsource/itim@5.3.0':
+    resolution: {integrity: sha512-y3m8RZeRCclnuQHgiRYIitCKc7iOthBo2SBYY8aDuyToKwGAvRMvBXHy6mdYceJbamRQrShEspXzkXTMDN20nQ==}
 
   '@fontsource/lora@5.2.8':
     resolution: {integrity: sha512-AQlfsHw4TP1x/eb2IZ6VjQ70ctKa39m9JN9A4zlvDOeKYLrCs+GaYIEQ86Y6YfSPGHn01bErXkRcyktOW0LOPQ==}
@@ -472,6 +547,9 @@ packages:
 
   '@fontsource/space-mono@5.3.0':
     resolution: {integrity: sha512-FrpBMOVWn3PRdRHlrZWC55X3kZG/2BTH7SM5ZyS/bky3iKya2BturI5lk+t0RoDQL2JyHzURsVq/EisCsxpI5A==}
+
+  '@fontsource/zen-maru-gothic@5.3.0':
+    resolution: {integrity: sha512-BuigfmzszMR3AOyAMSocQZ9bEq9o5sGCMOC/laI4TMpba1/KB1jxsdNFXWMUz02wVPd4vAVuMhsV00AQizFj3w==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -2186,17 +2264,41 @@ snapshots:
 
   '@fontsource/arimo@5.2.8': {}
 
+  '@fontsource/baloo-2@5.3.0': {}
+
+  '@fontsource/baloo-bhai-2@5.3.0': {}
+
+  '@fontsource/baloo-bhaijaan-2@5.3.0': {}
+
+  '@fontsource/baloo-bhaina-2@5.3.0': {}
+
+  '@fontsource/baloo-chettan-2@5.3.0': {}
+
+  '@fontsource/baloo-da-2@5.3.0': {}
+
+  '@fontsource/baloo-paaji-2@5.3.0': {}
+
+  '@fontsource/baloo-tamma-2@5.3.0': {}
+
+  '@fontsource/baloo-tammudu-2@5.3.0': {}
+
+  '@fontsource/baloo-thambi-2@5.3.0': {}
+
   '@fontsource/bebas-neue@5.3.0': {}
 
   '@fontsource/cinzel-decorative@5.2.8': {}
 
   '@fontsource/fira-code@5.2.7': {}
 
+  '@fontsource/gaegu@5.3.0': {}
+
   '@fontsource/im-fell-english-sc@5.2.6': {}
 
   '@fontsource/im-fell-english@5.2.6': {}
 
   '@fontsource/inter@5.2.8': {}
+
+  '@fontsource/itim@5.3.0': {}
 
   '@fontsource/lora@5.2.8': {}
 
@@ -2227,6 +2329,8 @@ snapshots:
   '@fontsource/source-serif-4@5.2.9': {}
 
   '@fontsource/space-mono@5.3.0': {}
+
+  '@fontsource/zen-maru-gothic@5.3.0': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:

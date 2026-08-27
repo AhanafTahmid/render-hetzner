@@ -40,6 +40,11 @@
  *    `fontSize * activeScale`. Only the spacing between them changes.
  */
 
+// Relative, NOT `@/lib/...`: this file is vendored verbatim into the render
+// repo, where the `@/` alias does not exist. `./scriptFallbacks` resolves to
+// lib/ in the app and to src/shorts/ beside the vendored copy in the render repo.
+import { withScriptFallbacks, type FontCharacter } from "./scriptFallbacks";
+
 import type { CSSProperties } from "react";
 
 /** The subset of a caption style this module reads. All fields optional: styles stored before these existed still render. */
@@ -134,10 +139,39 @@ const LEGACY_FONTS: Record<string, string> = {
   "segoe ui": `"Inter", system-ui, -apple-system, sans-serif`,
 };
 
+/**
+ * Every return path goes through withScriptFallbacks, including the passthrough
+ * for a font this table does not know about. A short saved with a custom
+ * fontFamily still gets script coverage, which is what makes already-generated
+ * clips render correctly on a re-export instead of only new ones.
+ */
+/**
+ * Which fallback tail a stack gets when all we have is the stack itself — the
+ * case for a short whose stored style predates `character`. Read off the leading
+ * family, so a Luckiest Guy caption keeps landing on comic script faces rather
+ * than dropping to a neutral sans mid-sentence.
+ */
+const FONT_CHARACTER_BY_FAMILY: Record<string, FontCharacter> = {
+  "luckiest guy": "comic",
+  "permanent marker": "comic",
+  "comic sans ms": "comic",
+  "marker felt": "comic",
+  "anton": "display",
+  "bebas neue": "display",
+  "archivo black": "display",
+  "arial black": "display",
+  "impact": "display",
+  "playfair display": "serif",
+  "georgia": "serif",
+  "space mono": "mono",
+  "courier new": "mono",
+};
+
 export function resolveCaptionFont(fontFamily: string | undefined): string {
-  if (!fontFamily) return `"Inter", system-ui, -apple-system, sans-serif`;
+  if (!fontFamily) return withScriptFallbacks(`"Luckiest Guy", "Comic Sans MS", cursive`, "comic");
   const first = fontFamily.split(",")[0].trim().replace(/^['"]|['"]$/g, "").toLowerCase();
-  return LEGACY_FONTS[first] ?? fontFamily;
+  const character = FONT_CHARACTER_BY_FAMILY[first] ?? "sans";
+  return withScriptFallbacks(LEGACY_FONTS[first] ?? fontFamily, character);
 }
 
 /**

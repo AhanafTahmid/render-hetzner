@@ -21,6 +21,33 @@ RUN apt-get update && apt-get install -y \
     libcups2 \
     && rm -rf /var/lib/apt/lists/*
 
+# Fonts.
+#
+# This image previously shipped NO fonts at all, so Chromium drew a "missing
+# glyph" box for every character the bundled caption webfonts do not cover.
+# Inter, Montserrat, Anton, Bebas Neue, Archivo Black, Luckiest Guy, Permanent
+# Marker, Playfair Display and Space Mono are Latin-only; Poppins adds
+# Devanagari and nothing else. So a Hindi, Bengali, Arabic, Tamil, Thai or
+# Chinese caption exported as a row of tofu boxes. macOS previews looked fine
+# because the OS quietly supplied its own Indic fonts — the container has
+# nothing to fall back on, which is why the bug only showed in the export.
+#
+# fonts-noto-core carries the per-script Noto Sans/Serif families (Devanagari,
+# Bengali, Arabic, Tamil, Telugu, Gujarati, Gurmukhi, Kannada, Malayalam,
+# Oriya, Sinhala, Thai, Hebrew, Greek, Cyrillic …), so the family names the
+# caption stacks list resolve to real files. CJK and emoji ship separately.
+#
+# Kept as its own layer: it adds ~300MB and changes far less often than the
+# Chromium library list above, so the two should not share a cache entry. Drop
+# fonts-noto-cjk to save most of that size if Chinese/Japanese/Korean captions
+# are out of scope — tofu returns for those three and nothing else.
+RUN apt-get update && apt-get install -y \
+    fonts-noto-core \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f
+
 COPY package.json ./package.json
 
 RUN npm install --legacy-peer-deps

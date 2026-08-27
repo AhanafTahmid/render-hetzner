@@ -120,10 +120,59 @@ const LEGACY_FONTS: Record<string, string> = {
   "segoe ui": `"Inter", system-ui, -apple-system, sans-serif`,
 };
 
+/**
+ * Script coverage for caption text outside Latin.
+ *
+ * CSS resolves fonts PER CHARACTER: for each glyph the browser walks the stack
+ * and takes the first family that has it. Appending script faces therefore needs
+ * no language detection, and it is the right mechanism rather than merely the
+ * cheap one — "आपका mindset बदलो" is one line with two scripts in it, and
+ * Hinglish/Banglish podcasts are full of them. Choosing one font per video would
+ * render the English half in a Devanagari face, or the Devanagari half in tofu.
+ *
+ * The tail matches the CHARACTER of the stack it is appended to, so a Comic
+ * caption stays comic in Hindi instead of dropping to a neutral sans: the Baloo
+ * 2 superfamily is one rounded, comic-adjacent face per Indic script plus
+ * Arabic, with Itim for Thai, Gaegu for Korean and Zen Maru Gothic for Japanese.
+ * Chinese, Hebrew and Sinhala have no comic face on Google Fonts and fall
+ * through to the Noto net — legible, just not playful.
+ *
+ * Where the families come from: Noto via the fonts-noto-* apt packages in the
+ * Dockerfile, Baloo/Itim/Gaegu/Zen Maru Gothic bundled in captionFonts.ts.
+ * Mirror of lib/captionPresets.ts in the app — if the two lists drift, the
+ * preview stops predicting the export.
+ */
+// One definition, shared with the shorts path. This block used to be a
+// hand-copied duplicate of it; the shorts copy fell behind and Bengali/Hindi/
+// Arabic captions exported as tofu boxes, so the duplicate is gone.
+import { withScriptFallbacks, type FontCharacter } from "./shorts/scriptFallbacks";
+
+/**
+ * Read off the leading family, because a stored style carries only the stack.
+ * This is what keeps an already-generated Luckiest Guy short landing on comic
+ * script faces on its next render, rather than a neutral sans.
+ */
+const FONT_CHARACTER_BY_FAMILY: Record<string, FontCharacter> = {
+  "luckiest guy": "comic",
+  "permanent marker": "comic",
+  "comic sans ms": "comic",
+  "marker felt": "comic",
+  "anton": "display",
+  "bebas neue": "display",
+  "archivo black": "display",
+  "arial black": "display",
+  "impact": "display",
+  "playfair display": "serif",
+  "georgia": "serif",
+  "space mono": "mono",
+  "courier new": "mono",
+};
+
 export function resolveCaptionFont(fontFamily: string | undefined): string {
-  if (!fontFamily) return `"Inter", system-ui, -apple-system, sans-serif`;
+  if (!fontFamily) return withScriptFallbacks(`"Luckiest Guy", "Comic Sans MS", cursive`, "comic");
   const first = fontFamily.split(",")[0].trim().replace(/^['"]|['"]$/g, "").toLowerCase();
-  return LEGACY_FONTS[first] ?? fontFamily;
+  const character = FONT_CHARACTER_BY_FAMILY[first] ?? "sans";
+  return withScriptFallbacks(LEGACY_FONTS[first] ?? fontFamily, character);
 }
 
 /** Which highlight treatment to use. Styles saved before `highlight` existed get the colour swap they had. */
