@@ -279,6 +279,7 @@ export const ShortComposition = ({
   showWatermark = false,
   extraTracks,
   faceFocusY,
+  speakerLayout,
   mainSegments,
   hideMainVideo,
 }: any) => {
@@ -380,6 +381,14 @@ export const ShortComposition = ({
   // because a cutaway covers only part of the clip.
   const activeSplit = activeSplitAt(parsedExtraTracks, frame);
 
+  // A two-speaker clip arrives already stacked — face tracking encoded the two
+  // crops into the file, so there is nothing for this composition to lay out.
+  // What it does owe the clip is the caption position: the seam at 50% is the
+  // one band that covers neither face, and it is where a split cutaway already
+  // puts them, so the two cases look the same. Unlike a cutaway this holds for
+  // the whole clip, because the stack does.
+  const stackedSpeakers = speakerLayout === "split";
+
   return (
     <AbsoluteFill className="bg-black">
       {/* Main video — one Sequence per piece. Unsplit, that is a single piece
@@ -429,7 +438,7 @@ export const ShortComposition = ({
               render server, so this preview cannot drift from the export.
               While a cutaway is up the captions move to the split seam — at the
               normal bottom position they sit on top of the stock footage. */}
-          <div style={captionGroupStyle(style, activeSplit !== null)}>
+          <div style={captionGroupStyle(style, activeSplit !== null || stackedSpeakers)}>
             {activeGroup.words.map((w: any, i: number) => (
               <span key={i} style={captionWordStyle(style, currentTime >= w.start && currentTime <= w.end)}>
                 {w.text || w.punctuated_word || w.word}
