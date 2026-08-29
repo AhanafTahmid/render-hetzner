@@ -254,9 +254,15 @@ function ExtraClipLayer({ clip }: { clip: any }) {
         {/* startFrom is where the clip begins inside its own file — set by a
             left-edge trim or a split. Without it both halves of a split clip
             replayed the same opening seconds. */}
+        {/* muted: B-roll is a picture, never a voice. Stock footage carries its
+            own audio — traffic, music, a narrator — and Remotion mixes every
+            unmuted video in the composition, so an overlay clip talked over the
+            speaker for as long as it was on screen. The main video below is the
+            only track that keeps its sound. */}
         <OffthreadVideo
           src={clip.url}
-          startFrom={Math.max(0, Math.round(clip.sourceStartFrame ?? 0))} style={{ ...mediaStyle, position: "absolute", inset: 0 }}
+          startFrom={Math.max(0, Math.round(clip.sourceStartFrame ?? 0))}
+          muted style={{ ...mediaStyle, position: "absolute", inset: 0 }}
         />
       </div>
     );
@@ -280,6 +286,7 @@ export const ShortComposition = ({
   extraTracks,
   faceFocusY,
   speakerLayout,
+  stackedRanges,
   mainSegments,
   hideMainVideo,
 }: any) => {
@@ -332,8 +339,16 @@ export const ShortComposition = ({
     return list.length ? list : [{ start: 0, duration: et - st }];
   })();
 
-  /** Each piece's slot on the timeline and its window inside the source. */
-  const placedSegments = segments.reduce<{ from: number; durF: number; segFrom: number }[]>(
+  /**
+   * Each piece's slot on the timeline and its window inside the source.
+   *
+   * `clipFrom` is the piece's start measured from the head of the UNCUT clip,
+   * which `segFrom` is not: `segFrom` carries `fromFrame` so it can address the
+   * raw source as well as the pre-trimmed face-tracked file. Anything that has
+   * to turn a TIMELINE frame back into a CLIP timestamp needs the former — cut
+   * a chunk out of the middle of a short and the two stop agreeing.
+   */
+  const placedSegments = segments.reduce<{ from: number; durF: number; segFrom: number; clipFrom: number }[]>(
     (acc, seg) => {
       const durF = Math.max(1, Math.round(seg.duration * fps));
       const prev = acc[acc.length - 1];
@@ -341,6 +356,7 @@ export const ShortComposition = ({
         from: prev ? prev.from + prev.durF : 0,
         durF,
         segFrom: fromFrame + Math.round(seg.start * fps),
+        clipFrom: Math.round(seg.start * fps),
       });
       return acc;
     },
@@ -381,13 +397,30 @@ export const ShortComposition = ({
   // because a cutaway covers only part of the clip.
   const activeSplit = activeSplitAt(parsedExtraTracks, frame);
 
+  // Where this timeline frame sits inside the UNCUT clip. The two are the same
+  // number until the short is cut in the editor, at which point the timeline is
+  // shorter than the clip and everything measured in clip seconds — the stacked
+  // ranges below — has to be looked up through the cut, not past it.
+  const clipTime = clipTimeAt(placedSegments, frame, fps);
+
   // A two-speaker clip arrives already stacked — face tracking encoded the two
   // crops into the file, so there is nothing for this composition to lay out.
   // What it does owe the clip is the caption position: the seam at 50% is the
   // one band that covers neither face, and it is where a split cutaway already
-  // puts them, so the two cases look the same. Unlike a cutaway this holds for
-  // the whole clip, because the stack does.
-  const stackedSpeakers = speakerLayout === "split";
+  // puts them, so the two cases look the same.
+  //
+  // Per frame, because the stack is per SEGMENT. A podcast master cuts between
+  // a wide two-shot and single close-ups, so face tracking stacks the stretches
+  // that hold both speakers and runs its single-speaker camera over the rest —
+  // and `stackedRanges` says which frames are which. Pinning the captions to
+  // the seam for the whole clip parks them across the face of every close-up in
+  // it, which is exactly what a two-speaker clip looked like before this.
+  //
+  // `stackedRanges` is the ONLY thing that raises the captions; `speakerLayout`
+  // just confirms the clip is the kind that can have them. A clip with no
+  // ranges gets ordinary bottom captions — see `withinRanges` for why the
+  // unknown case resolves that way rather than the other.
+  const stackedSpeakers = speakerLayout === "split" && withinRanges(stackedRanges, clipTime);
 
   return (
     <AbsoluteFill className="bg-black">
@@ -457,3 +490,50 @@ export const ShortComposition = ({
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Turn a timeline frame into a timestamp inside the uncut clip.
+ *
+ * Identity for a short that has not been cut. For one that has, the piece
+ * holding `frame` says where in the clip it came from, and the offset within
+ * that piece carries over unchanged — the same mapping `segFrom` performs for
+ * the video itself, so the picture and anything keyed to clip time agree.
+ */
+function clipTimeAt(
+  placed: { from: number; durF: number; clipFrom: number }[],
+  frame: number,
+  fps: number
+): number {
+  for (const p of placed) {
+    if (frame < p.from + p.durF) return (p.clipFrom + Math.max(0, frame - p.from)) / fps;
+  }
+  const last = placed[placed.length - 1];
+  return last ? (last.clipFrom + last.durF) / fps : frame / fps;
+}
+
+/**
+ * Is `t` (seconds into the uncut clip) inside any of `ranges`?
+ *
+ * An absent or empty list means NOWHERE, not "the whole clip". That default was
+ * the other way round at first, on the reasoning that a "split" short written
+ * before the stack became per-segment was stacked end to end — true, but it
+ * makes the unknown case fail in the expensive direction, and the two
+ * directions are not equally expensive:
+ *
+ *   - Captions at the seam on an UNSTACKED frame sit across the speaker's face.
+ *     Broken, and the bug this whole path exists to fix.
+ *   - Captions at their normal height on a STACKED frame sit at 82% of the
+ *     frame, while the lower speaker's face is at ~70% — on their chest, which
+ *     is exactly where captions sit on every ordinary clip. Fine.
+ *
+ * So when nothing tells us where the stack is, put the captions where they are
+ * never wrong. A clip that carries ranges still gets the seam for precisely the
+ * frames that are stacked.
+ */
+function withinRanges(
+  ranges: { start: number; end: number }[] | undefined | null,
+  t: number
+): boolean {
+  if (!Array.isArray(ranges) || ranges.length === 0) return false;
+  return ranges.some((r) => t >= Number(r?.start) && t <= Number(r?.end));
+}
