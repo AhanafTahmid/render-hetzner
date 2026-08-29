@@ -305,6 +305,16 @@ const uploadFileToR2 = async (filePath: string, key: string) => {
       Key: key,
       Body: createReadStream(filePath),
       ContentType: "video/mp4",
+      // A render is written once to a key that is never rewritten — the app
+      // derives a fresh key per export — so it can be cached forever.
+      //
+      // Without this R2 sends no Cache-Control at all, and a header the app's
+      // own uploads have always set was missing on the one file users actually
+      // download and replay: verified on a live export, `cache-control: <none>`
+      // against `public, max-age=31536000, immutable` on cdn.shortshero.com.
+      // The browser therefore re-fetched a finished video on every replay, and
+      // no edge cache could hold it whatever the zone's rules said.
+      CacheControl: "public, max-age=31536000, immutable",
     },
     partSize: 8 * 1024 * 1024,
     queueSize: 4,
