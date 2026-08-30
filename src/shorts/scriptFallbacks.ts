@@ -40,9 +40,20 @@
  * Malayalam, Odia and Arabic, with Itim covering Thai, Gaegu Korean and Zen
  * Maru Gothic Japanese.
  *
- * Three scripts have no comic-style face on Google Fonts — Chinese, Hebrew and
- * Sinhala. Those fall through the comic tail to the Noto Sans safety net, which
- * is legible and correct, just not playful. There is nothing better to pick.
+ * The remaining scripts have no comic-style face on Google Fonts — Chinese,
+ * Hebrew, Sinhala, Armenian, Georgian, Khmer, Lao, Myanmar, Ethiopic and
+ * Tibetan. Those fall through the comic tail to the Noto safety net, which is
+ * legible and correct, just not playful. There is nothing better to pick.
+ *
+ * ── Coverage ────────────────────────────────────────────────────────────────
+ *
+ * Between them the two lists below cover every language the transcriber can
+ * return. Most of that list shares a script with an entry here rather than
+ * needing one of its own: Assamese rides on Bengali, Marathi/Nepali/Sanskrit on
+ * Devanagari, Urdu/Pashto/Persian/Sindhi on Arabic, Yiddish on Hebrew,
+ * Kazakh/Tatar/Bashkir/Mongolian/Tajik on Cyrillic (in "Noto Sans"), and
+ * Javanese/Sundanese/Hausa/Yoruba/Hawaiian and the rest on Latin. Adding a
+ * language therefore only means adding a face when it brings a NEW SCRIPT.
  *
  * ── Where these families come from ──────────────────────────────────────────
  *   - export:  render-hetzner — Noto via the fonts-noto-* apt packages in the
@@ -88,6 +99,20 @@ const NOTO_SCRIPT_FACES = [
   "Noto Sans Sinhala",
   "Noto Sans Thai",
   "Noto Sans Hebrew",
+  // The scripts with no comic-style face anywhere, added so the whole
+  // transcription language list resolves. Each is one apt file in
+  // fonts-noto-core and one Google Fonts family in globals.css — see
+  // "Where these families come from" above.
+  "Noto Sans Armenian",
+  "Noto Sans Georgian",
+  "Noto Sans Khmer",
+  "Noto Sans Lao",
+  "Noto Sans Myanmar",  // Burmese
+  "Noto Sans Ethiopic", // Amharic
+  // SERIF, not Sans: Google Fonts and fonts-noto-core both ship Tibetan only
+  // as NotoSerifTibetan. "Noto Sans Tibetan" is not a family that exists, and
+  // naming it here would resolve to nothing.
+  "Noto Serif Tibetan",
   "Noto Sans SC",
   "Noto Sans JP",
   "Noto Sans KR",
@@ -117,8 +142,9 @@ const SCRIPT_TAILS: Record<FontCharacter, string> = {
  * The trailing generic keyword is dropped first: `serif` or `cursive` sitting
  * before the tail would let the OS answer a Devanagari glyph with whatever it
  * likes, which is the inconsistency between preview and export this is meant to
- * remove. `sans-serif` goes back on the end as the final catch for a script not
- * listed at all (Armenian, Khmer, Ethiopic…), which fontconfig serves out of
+ * remove. `sans-serif` goes back on the end as the final catch for a script the
+ * list above does not name — a historic writing system, or one a future
+ * transcriber language brings in — which fontconfig serves out of
  * fonts-noto-core in the container.
  *
  * Applied to custom `fontFamily` values too, so shorts generated before any of
