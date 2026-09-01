@@ -77,11 +77,79 @@ export const HOOK_COLORS: readonly string[] = [
   "#ef4444",
 ];
 
-/** How long the hook stays up, in seconds, before it fades out. */
-export const HOOK_SECONDS = 3;
-/** Fade in / fade out, in seconds. Short enough to read as an entrance, not an animation. */
-export const HOOK_FADE_IN = 0.25;
-export const HOOK_FADE_OUT = 0.4;
+/**
+ * How long the hook stays on screen: a whole number of seconds, or the whole clip.
+ *
+ * Stored as a STRING even for the numeric options, so one field holds both kinds
+ * of answer and no magic number has to stand in for "full". A `0`-means-full
+ * encoding would sit next to `hookTitleEnabled` in the same document and read as
+ * "off" to anyone skimming, which is exactly the confusion worth paying a string
+ * to avoid.
+ */
+export type HookDuration = "2" | "3" | "4" | "5" | "full";
+
+export const HOOK_DURATIONS: readonly HookDuration[] = ["2", "3", "4", "5", "full"];
+
+/**
+ * The whole clip, by default.
+ *
+ * The hook is what a scroller reads before deciding to watch, and it is also
+ * what someone arriving mid-clip reads. Neither is served by a hook that has
+ * already gone. A shorter setting is there for footage that puts a face at the
+ * top of the frame, which is a real reason to get out of the way — but it should
+ * be a choice, not the starting position.
+ */
+export const DEFAULT_HOOK_DURATION: HookDuration = "full";
+
+/**
+ * Accepts the string form the UI sends AND a bare number, because a JSON body is
+ * free to carry `"hookDuration": 3`. Without the coercion that fell through to
+ * the default — meaning a client asking for 3 seconds silently got the whole
+ * clip, with nothing anywhere saying so. Trimmed too, so `" 3"` is not a
+ * different answer from `"3"`.
+ */
+export function sanitizeHookDuration(value: unknown): HookDuration {
+  const candidate =
+    typeof value === "number" && Number.isFinite(value)
+      ? String(Math.round(value))
+      : typeof value === "string"
+        ? value.trim().toLowerCase()
+        : value;
+  return HOOK_DURATIONS.includes(candidate as HookDuration)
+    ? (candidate as HookDuration)
+    : DEFAULT_HOOK_DURATION;
+}
+
+/** Label for the pickers. Numeric options get a unit; "full" gets a phrase. */
+export function hookDurationLabel(duration: HookDuration): string {
+  return duration === "full" ? "Full clip" : `${duration}s`;
+}
+
+/**
+ * How many frames the hook is drawn for.
+ *
+ * Clamped to the clip's own length, so a 5-second setting on a 3-second short
+ * shows the hook for the whole 3 seconds rather than reaching past the last
+ * frame — and so "full" and "longer than the clip" collapse to the same answer.
+ *
+ * There is NO FADE at either end, by request: the hook is at full opacity on
+ * frame 0 and cuts out in one frame when its time is up. Frame 0 is the
+ * thumbnail, the frame a paused player shows and the frame a scroller sees
+ * first, and the previous version faded IN from zero — so the hook was invisible
+ * at precisely the moment it exists for. Trading a soft exit for a guaranteed
+ * entrance is the deliberate half of that; a hook set to less than the full clip
+ * will visibly pop out.
+ */
+export function hookVisibleFrames(
+  duration: HookDuration,
+  fps: number,
+  durationInFrames: number
+): number {
+  if (duration === "full") return durationInFrames;
+  const seconds = Number(duration);
+  if (!Number.isFinite(seconds) || seconds <= 0) return durationInFrames;
+  return Math.min(durationInFrames, Math.round(seconds * fps));
+}
 
 /**
  * A title the pipeline writes when the model gave it nothing usable. Drawing it
@@ -180,6 +248,7 @@ export interface HookConfig {
   enabled?: boolean | null;
   style?: string | null;
   color?: string | null;
+  duration?: string | null;
 }
 
 /**
@@ -203,7 +272,9 @@ export interface HookConfig {
 export function resolveHookProps(
   config: HookConfig | null | undefined,
   short: { hookText?: string | null; title?: string | null }
-): { hookText: string; hookStyle: HookStyleId; hookColor: string } | undefined {
+):
+  | { hookText: string; hookStyle: HookStyleId; hookColor: string; hookDuration: HookDuration }
+  | undefined {
   if (!config?.enabled) return undefined;
   const hookText = resolveHookText(short);
   if (!hookText) return undefined;
@@ -211,6 +282,7 @@ export function resolveHookProps(
     hookText,
     hookStyle: sanitizeHookStyle(config.style),
     hookColor: sanitizeHookColor(config.color),
+    hookDuration: sanitizeHookDuration(config.duration),
   };
 }
 

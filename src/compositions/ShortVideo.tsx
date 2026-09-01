@@ -22,14 +22,14 @@ import { splitBox, mainBox, activeSplitAt, mainObjectPosition } from "../shorts/
 import { captionGroupStyle, captionWordStyle, type CaptionRenderStyle } from "../shorts/captionRender";
 import {
   DEFAULT_HOOK_COLOR,
-  HOOK_FADE_IN,
-  HOOK_FADE_OUT,
-  HOOK_SECONDS,
   hookFont,
   hookFontSize,
   hookTextColor,
+  hookVisibleFrames,
   sanitizeHookColor,
+  sanitizeHookDuration,
   sanitizeHookStyle,
+  type HookDuration,
   type HookStyleId,
 } from "../shorts/hookTitle";
 // Every caption typeface a preset can name. The container installs no system
@@ -95,23 +95,28 @@ function WatermarkOverlay({ frame, totalFrames, fps }: { frame: number; totalFra
 
 // ── Hook title overlay ────────────────────────────────────────────────────────
 /**
- * The headline burned over the opening of a clip.
+ * The headline burned over the clip.
  *
- * Up for HOOK_SECONDS and then gone, rather than for the whole clip. Both are
- * defensible — a permanent hook catches a viewer who arrives mid-scroll — but
- * the top of the frame is also where a lot of podcast footage puts the
- * speaker's head, and covering a face for forty seconds costs more than it
- * buys. Three seconds is long enough to read one line and decide.
+ * STATIC, and on from frame 0. No fade at either end and no motion: full opacity
+ * on the first frame, full opacity on its last, then a single-frame cut. The
+ * previous version faded IN from zero over a quarter of a second, which left
+ * frame 0 — the thumbnail, the frame a paused player shows, the frame a scroller
+ * sees first — with no hook on it at all.
+ *
+ * `duration` decides how long it lasts: 2–5 seconds, or the whole clip (the
+ * default). `hookVisibleFrames` clamps it to the clip's own length, so a 5-second
+ * setting on a 3-second short simply covers the short.
  *
  * Geometry is expressed against the composition's own width/height, never in
  * fixed px: this same component draws into a 1080×1920 export and into a
- * ~300px-wide preview player, and a px-sized headline would be unreadable in
- * one of them.
+ * ~300px-wide preview player, and a px-sized headline would be unreadable in one
+ * of them.
  */
 function HookTitleOverlay({
   text,
   style,
   color,
+  duration,
   frame,
   fps,
   durationInFrames,
@@ -119,28 +124,16 @@ function HookTitleOverlay({
   text: string;
   style: HookStyleId;
   color: string;
+  duration: HookDuration;
   frame: number;
   fps: number;
   durationInFrames: number;
 }) {
   const { width, height } = useVideoConfig();
 
-  // Never outlive the clip: a 2-second short would otherwise fade the hook out
-  // after the last frame, i.e. never.
-  const upFrames = Math.min(durationInFrames, Math.round(HOOK_SECONDS * fps));
-  if (frame >= upFrames) return null;
-
-  const fadeIn = Math.max(1, Math.round(HOOK_FADE_IN * fps));
-  const fadeOut = Math.max(1, Math.round(HOOK_FADE_OUT * fps));
-  const clamp = { extrapolateLeft: "clamp" as const, extrapolateRight: "clamp" as const };
-  const opacity = Math.min(
-    interpolate(frame, [0, fadeIn], [0, 1], clamp),
-    interpolate(frame, [Math.max(fadeIn, upFrames - fadeOut), upFrames], [1, 0], clamp)
-  );
-  // A short rise on entry. Measured in composition height so it scales with the
-  // preview, and it only runs during the fade-in so the text is still for most
-  // of its time on screen.
-  const rise = interpolate(frame, [0, fadeIn], [height * 0.012, 0], clamp);
+  // A hard cut, not a fade — see hookVisibleFrames. "full" returns the clip's own
+  // length, so this comparison is simply never true for the default.
+  if (frame >= hookVisibleFrames(duration, fps, durationInFrames)) return null;
 
   const fontSize = hookFontSize(text, width);
   const { stack, weight } = hookFont(style);
@@ -171,8 +164,6 @@ function HookTitleOverlay({
         display: "flex",
         justifyContent: "center",
         pointerEvents: "none",
-        opacity,
-        transform: `translateY(${rise}px)`,
       }}
     >
       {style === "block" ? (
@@ -437,6 +428,7 @@ export const ShortComposition = ({
   hookText,
   hookStyle,
   hookColor,
+  hookDuration,
 }: any) => {
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -629,10 +621,11 @@ export const ShortComposition = ({
         </AbsoluteFill>
       )}
 
-      {/* Hook title over the opening seconds.
-          Drawn AFTER the captions so it wins any overlap — on a very short clip
-          the first caption group and the hook are on screen together, and the
-          hook is the thing the viewer needs first. The absence of text is the
+      {/* Hook title, static and on from frame 0 for its chosen duration.
+          Drawn AFTER the captions so it wins any overlap — the two sit at
+          opposite ends of the frame, but a stacked two-speaker clip moves the
+          captions to the seam and a long hook reaches down, and where they do
+          meet the hook is the thing the viewer needs first. The absence of text is the
           only "off" switch it has: lib/shortRenderInput.ts already collapses
           "hooks disabled", "caller passed no settings" and "this clip has no
           usable hook line" into one missing prop, so there is nothing to check
@@ -642,6 +635,7 @@ export const ShortComposition = ({
           text={hookText.trim()}
           style={sanitizeHookStyle(hookStyle)}
           color={sanitizeHookColor(hookColor, DEFAULT_HOOK_COLOR)}
+          duration={sanitizeHookDuration(hookDuration)}
           frame={frame}
           fps={fps}
           durationInFrames={durationInFrames}
