@@ -20,6 +20,18 @@ import {
 } from "remotion";
 import { splitBox, mainBox, activeSplitAt, mainObjectPosition } from "../shorts/splitLayout";
 import { captionGroupStyle, captionWordStyle, type CaptionRenderStyle } from "../shorts/captionRender";
+import {
+  DEFAULT_HOOK_COLOR,
+  HOOK_FADE_IN,
+  HOOK_FADE_OUT,
+  HOOK_SECONDS,
+  hookFont,
+  hookFontSize,
+  hookTextColor,
+  sanitizeHookColor,
+  sanitizeHookStyle,
+  type HookStyleId,
+} from "../shorts/hookTitle";
 // Every caption typeface a preset can name. The container installs no system
 // fonts, so without this every preset renders in the same fallback face.
 import "../captionFonts";
@@ -77,6 +89,139 @@ function WatermarkOverlay({ frame, totalFrames, fps }: { frame: number; totalFra
       }}>
         shortshero.com
       </span>
+    </div>
+  );
+}
+
+// ── Hook title overlay ────────────────────────────────────────────────────────
+/**
+ * The headline burned over the opening of a clip.
+ *
+ * Up for HOOK_SECONDS and then gone, rather than for the whole clip. Both are
+ * defensible — a permanent hook catches a viewer who arrives mid-scroll — but
+ * the top of the frame is also where a lot of podcast footage puts the
+ * speaker's head, and covering a face for forty seconds costs more than it
+ * buys. Three seconds is long enough to read one line and decide.
+ *
+ * Geometry is expressed against the composition's own width/height, never in
+ * fixed px: this same component draws into a 1080×1920 export and into a
+ * ~300px-wide preview player, and a px-sized headline would be unreadable in
+ * one of them.
+ */
+function HookTitleOverlay({
+  text,
+  style,
+  color,
+  frame,
+  fps,
+  durationInFrames,
+}: {
+  text: string;
+  style: HookStyleId;
+  color: string;
+  frame: number;
+  fps: number;
+  durationInFrames: number;
+}) {
+  const { width, height } = useVideoConfig();
+
+  // Never outlive the clip: a 2-second short would otherwise fade the hook out
+  // after the last frame, i.e. never.
+  const upFrames = Math.min(durationInFrames, Math.round(HOOK_SECONDS * fps));
+  if (frame >= upFrames) return null;
+
+  const fadeIn = Math.max(1, Math.round(HOOK_FADE_IN * fps));
+  const fadeOut = Math.max(1, Math.round(HOOK_FADE_OUT * fps));
+  const clamp = { extrapolateLeft: "clamp" as const, extrapolateRight: "clamp" as const };
+  const opacity = Math.min(
+    interpolate(frame, [0, fadeIn], [0, 1], clamp),
+    interpolate(frame, [Math.max(fadeIn, upFrames - fadeOut), upFrames], [1, 0], clamp)
+  );
+  // A short rise on entry. Measured in composition height so it scales with the
+  // preview, and it only runs during the fade-in so the text is still for most
+  // of its time on screen.
+  const rise = interpolate(frame, [0, fadeIn], [height * 0.012, 0], clamp);
+
+  const fontSize = hookFontSize(text, width);
+  const { stack, weight } = hookFont(style);
+  const fg = hookTextColor(color);
+  // Proportional to the type, not to the frame, so the padding around a short
+  // hook does not swallow it while a long one bursts its box.
+  const padX = fontSize * 0.42;
+  const padY = fontSize * 0.26;
+
+  const shared: React.CSSProperties = {
+    fontFamily: stack,
+    fontWeight: weight,
+    fontSize,
+    color: fg,
+    textAlign: "center",
+    margin: 0,
+  };
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        // 7% of the height clears the platform chrome (TikTok's top row, the
+        // Reels header) that would otherwise sit on the first line.
+        top: height * 0.07,
+        left: width * 0.07,
+        right: width * 0.07,
+        display: "flex",
+        justifyContent: "center",
+        pointerEvents: "none",
+        opacity,
+        transform: `translateY(${rise}px)`,
+      }}
+    >
+      {style === "block" ? (
+        /**
+         * One filled bar per LINE, hugging the text — not a single rectangle
+         * behind the paragraph. That is what `display: inline` plus
+         * `boxDecorationBreak: "clone"` buys: the background and the padding are
+         * repeated on each line box instead of being drawn once around the whole
+         * inline flow, which is the difference between the reference screenshot
+         * and a plain coloured slab.
+         */
+        <p
+          style={{
+            ...shared,
+            textTransform: "uppercase",
+            // Roomier than the card: each line carries its own padded bar, and a
+            // tighter leading makes consecutive bars collide.
+            lineHeight: 1.42,
+            letterSpacing: fontSize * 0.005,
+          }}
+        >
+          <span
+            style={{
+              display: "inline",
+              backgroundColor: color,
+              padding: `${padY * 0.55}px ${padX * 0.5}px`,
+              boxDecorationBreak: "clone",
+              WebkitBoxDecorationBreak: "clone",
+              // The fill is doing the separating, so the shadow only has to keep
+              // the glyph edge crisp where the bar meets the footage.
+              textShadow: `0 ${fontSize * 0.02}px ${fontSize * 0.05}px rgba(0,0,0,0.35)`,
+            }}
+          >
+            {text}
+          </span>
+        </p>
+      ) : (
+        <div
+          style={{
+            backgroundColor: color,
+            borderRadius: fontSize * 0.34,
+            padding: `${padY}px ${padX}px`,
+            maxWidth: "100%",
+            boxShadow: `0 ${height * 0.006}px ${height * 0.018}px rgba(0,0,0,0.35)`,
+          }}
+        >
+          <p style={{ ...shared, lineHeight: 1.2 }}>{text}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -289,6 +434,9 @@ export const ShortComposition = ({
   stackedRanges,
   mainSegments,
   hideMainVideo,
+  hookText,
+  hookStyle,
+  hookColor,
 }: any) => {
   const { fps } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -479,6 +627,25 @@ export const ShortComposition = ({
             ))}
           </div>
         </AbsoluteFill>
+      )}
+
+      {/* Hook title over the opening seconds.
+          Drawn AFTER the captions so it wins any overlap — on a very short clip
+          the first caption group and the hook are on screen together, and the
+          hook is the thing the viewer needs first. The absence of text is the
+          only "off" switch it has: lib/shortRenderInput.ts already collapses
+          "hooks disabled", "caller passed no settings" and "this clip has no
+          usable hook line" into one missing prop, so there is nothing to check
+          twice here. */}
+      {typeof hookText === "string" && hookText.trim() !== "" && (
+        <HookTitleOverlay
+          text={hookText.trim()}
+          style={sanitizeHookStyle(hookStyle)}
+          color={sanitizeHookColor(hookColor, DEFAULT_HOOK_COLOR)}
+          frame={frame}
+          fps={fps}
+          durationInFrames={durationInFrames}
+        />
       )}
 
       {/* Watermark for free users */}

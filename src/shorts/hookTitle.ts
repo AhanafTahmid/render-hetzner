@@ -1,0 +1,256 @@
+/**
+ * The hook title — the headline burned over the first seconds of a clip.
+ *
+ * A clip that opens on a sentence fragment gives a scrolling viewer nothing to
+ * decide on. The hook is the decision: one line at the top of the frame saying
+ * what the next 40 seconds are about. Every model already writes one per clip
+ * (`viral_hook_text`, stored as `hookText`); until now nothing drew it.
+ *
+ * This module is the ONLY definition of what a hook looks like. It is imported
+ * by three very different consumers:
+ *
+ *   - components/RemotionShortPlayer.tsx — the editor preview AND, via
+ *     scripts/sync-render-composition.mjs, the render server's composition.
+ *   - components/dashboard/UploadVideo.tsx — the per-upload picker.
+ *   - app/dashboard/settings — the account-wide default picker.
+ *   - the API routes, which re-validate whatever the client sends.
+ *
+ * It therefore imports nothing but `./scriptFallbacks`, with a RELATIVE path.
+ * It is vendored verbatim into the render repo
+ * (as src/shorts/hookTitle.ts) by the sync script, and a vendored file cannot
+ * resolve the `@/` alias — the same constraint that already shapes
+ * lib/splitLayout.ts and lib/captionRender.ts. `./scriptFallbacks` is the one
+ * import that survives the move, because it is vendored into the SAME directory.
+ * Keep it otherwise dependency-free and free of anything server-only; it ships
+ * in a client bundle too.
+ */
+
+import { withScriptFallbacks } from "./scriptFallbacks";
+
+export type HookStyleId = "card" | "block";
+
+export interface HookStyleMeta {
+  id: HookStyleId;
+  name: string;
+  /** One line for the picker, describing the look rather than the mechanism. */
+  hint: string;
+  /**
+   * Colour the swatches start from when this style is picked, and the colour a
+   * project falls back to if its stored one is unusable. They differ because
+   * the colour means opposite things in the two styles: the card is a light
+   * surface behind dark text, the block is a saturated fill under white text.
+   */
+  defaultColor: string;
+}
+
+export const HOOK_STYLES: HookStyleMeta[] = [
+  {
+    id: "card",
+    name: "Card",
+    hint: "One rounded panel, sentence case",
+    defaultColor: "#ffffff",
+  },
+  {
+    id: "block",
+    name: "Block",
+    hint: "Filled bars behind each line, uppercase",
+    defaultColor: "#22c55e",
+  },
+];
+
+export const DEFAULT_HOOK_STYLE: HookStyleId = "card";
+export const DEFAULT_HOOK_COLOR = "#ffffff";
+
+/**
+ * Swatches offered in the pickers. Not a limit — both pickers also expose a
+ * free colour input, and `sanitizeHookColor` accepts any valid hex — just the
+ * eight that cover almost every channel's palette without opening a dialog.
+ */
+export const HOOK_COLORS: readonly string[] = [
+  "#ffffff",
+  "#000000",
+  "#22c55e",
+  "#ff6a00",
+  "#fde047",
+  "#3b82f6",
+  "#ec4899",
+  "#ef4444",
+];
+
+/** How long the hook stays up, in seconds, before it fades out. */
+export const HOOK_SECONDS = 3;
+/** Fade in / fade out, in seconds. Short enough to read as an entrance, not an animation. */
+export const HOOK_FADE_IN = 0.25;
+export const HOOK_FADE_OUT = 0.4;
+
+/**
+ * A title the pipeline writes when the model gave it nothing usable. Drawing it
+ * as a hook would put the words "Untitled Clip" across the top of the video,
+ * which is worse than drawing nothing — so it is treated as absent.
+ */
+const PLACEHOLDER_TITLES = new Set(["untitled clip", "untitled", "clip"]);
+
+/**
+ * The words to draw for a clip, or "" for nothing.
+ *
+ * `hookText` first because it is written FOR this job: max ten words, in the
+ * transcript's own language, phrased as a hook. `title` is the fallback for
+ * clips generated before hooks were stored — it is a YouTube listing title, so
+ * it is longer and less punchy, but it is still a true description of the clip
+ * and better than an empty frame.
+ */
+export function resolveHookText(short: {
+  hookText?: string | null;
+  title?: string | null;
+}): string {
+  const hook = (short.hookText ?? "").trim();
+  if (hook) return hook;
+  const title = (short.title ?? "").trim();
+  if (!title || PLACEHOLDER_TITLES.has(title.toLowerCase())) return "";
+  return title;
+}
+
+/**
+ * A project's hook choice, as stored on the Project document.
+ *
+ * `enabled` off, or the whole object missing, both mean "no hook" — see
+ * resolveHookProps for why those two must be indistinguishable.
+ */
+export interface HookConfig {
+  enabled?: boolean | null;
+  style?: string | null;
+  color?: string | null;
+}
+
+/**
+ * The three props the composition needs, or undefined for "draw nothing".
+ *
+ * THE one place that decision is made, called by everything that renders a
+ * short: lib/shortRenderInput.ts (the export payload and its fingerprint),
+ * components/RemotionShortPlayer.tsx (the project page's clip player) and
+ * app/editor/[shortId] (the editor preview). It lives here, not in
+ * shortRenderInput.ts, for a mechanical reason worth stating: that module
+ * imports node:crypto, so a client component cannot touch it.
+ *
+ * Undefined collapses four different situations that must all render
+ * identically: the project has hooks off, the caller passed no config at all,
+ * the config is there but its text is empty, and the clip predates hooks with
+ * nothing but a placeholder title. Collapsing them HERE rather than at each
+ * caller is what keeps the export fingerprint honest — "hook on with nothing to
+ * draw" has to hash the same as "hook off", because it renders the same pixels,
+ * and a hash that differs would charge the user for an identical re-render.
+ */
+export function resolveHookProps(
+  config: HookConfig | null | undefined,
+  short: { hookText?: string | null; title?: string | null }
+): { hookText: string; hookStyle: HookStyleId; hookColor: string } | undefined {
+  if (!config?.enabled) return undefined;
+  const hookText = resolveHookText(short);
+  if (!hookText) return undefined;
+  return {
+    hookText,
+    hookStyle: sanitizeHookStyle(config.style),
+    hookColor: sanitizeHookColor(config.color),
+  };
+}
+
+/** Any 3- or 6-digit hex colour, with the hash. Anything else is not a colour. */
+const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+export function sanitizeHookStyle(value: unknown): HookStyleId {
+  return value === "block" || value === "card" ? value : DEFAULT_HOOK_STYLE;
+}
+
+export function sanitizeHookColor(value: unknown, fallback = DEFAULT_HOOK_COLOR): string {
+  if (typeof value !== "string") return fallback;
+  const trimmed = value.trim();
+  // Lower-cased so two spellings of the same colour cannot produce two
+  // different export fingerprints and charge someone for an identical re-render.
+  return HEX.test(trimmed) ? trimmed.toLowerCase() : fallback;
+}
+
+/** #abc → #aabbcc, so one parser handles both forms. */
+function expandHex(hex: string): string {
+  if (hex.length !== 4) return hex;
+  return "#" + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+}
+
+/**
+ * Perceived brightness of a colour, 0 (black) to 1 (white).
+ *
+ * Relative luminance per WCAG, including the sRGB gamma step. The cheap
+ * average-of-channels version rates pure green at 0.5 and would put dark text
+ * on it; the gamma-correct version rates it 0.72, which is why the green block
+ * in the reference screenshot correctly wants WHITE text.
+ */
+export function hookLuminance(color: string): number {
+  const hex = expandHex(color.trim().toLowerCase());
+  if (!/^#[0-9a-f]{6}$/.test(hex)) return 1;
+  const channel = (i: number) => {
+    const v = parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
+}
+
+/**
+ * Text colour for a given fill.
+ *
+ * Derived rather than configurable on purpose: the pickers offer one colour, and
+ * a second control for the text is how you end up with white on yellow. The
+ * threshold sits at 0.42 rather than 0.5 because white text holds up on a
+ * mid-tone better than black does — black on a medium blue is the pairing that
+ * fails first.
+ */
+export function hookTextColor(fill: string): string {
+  return hookLuminance(fill) > 0.42 ? "#101014" : "#ffffff";
+}
+
+/**
+ * Font size for the hook, in composition pixels, chosen from how much text
+ * there is.
+ *
+ * A ramp rather than measured text: Remotion renders each frame in isolation and
+ * measuring a DOM node to then re-render at a new size costs a layout pass per
+ * frame and still cannot be done during the render server's headless pass. The
+ * breakpoints are set so the longest hook the model is allowed to write (ten
+ * words, ~70 characters) lands on three lines inside the box below.
+ *
+ * Scaled by the composition width so the same numbers work at 1080 and in the
+ * small preview player.
+ */
+export function hookFontSize(text: string, compositionWidth: number): number {
+  const n = text.trim().length;
+  const base = n <= 24 ? 82 : n <= 40 ? 72 : n <= 58 ? 62 : n <= 80 ? 54 : 46;
+  return (base * compositionWidth) / 1080;
+}
+
+/**
+ * The typeface for each style, and its weight.
+ *
+ * Restricted to the families the render container actually has. That container
+ * installs no fonts of its own: everything is loaded explicitly by
+ * render-hetzner/src/captionFonts.ts (and by the @import in app/globals.css on
+ * this side), so a family outside that set renders in the same anonymous
+ * fallback in the EXPORT while looking correct in a macOS browser preview. That
+ * is the exact bug the caption preset table's header documents; the hook is not
+ * going to reintroduce it.
+ *
+ * Montserrat 700 for the card because it is a clean humanist sans at a weight
+ * that reads as a headline without shouting; Archivo Black for the block because
+ * a filled bar needs a face heavy enough to hold the fill.
+ *
+ * `withScriptFallbacks` appends the Noto/Baloo tail, so a Bengali or Arabic hook
+ * gets real glyphs instead of tofu boxes — the same treatment captions get.
+ */
+export function hookFont(style: HookStyleId): { stack: string; weight: number } {
+  return style === "block"
+    ? {
+        stack: withScriptFallbacks(`"Archivo Black", "Arial Black", sans-serif`, "display"),
+        weight: 400,
+      }
+    : {
+        stack: withScriptFallbacks(`"Montserrat", system-ui, sans-serif`, "sans"),
+        weight: 700,
+      };
+}
