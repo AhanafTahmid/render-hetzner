@@ -91,6 +91,66 @@ export const HOOK_FADE_OUT = 0.4;
 const PLACEHOLDER_TITLES = new Set(["untitled clip", "untitled", "clip"]);
 
 /**
+ * Hard ceiling on what gets drawn, in characters.
+ *
+ * The prompt asks for under 60, which a real hook comfortably meets. This is not
+ * for the hook — it is for the TITLE FALLBACK. A YouTube Shorts title is allowed
+ * 100 characters, and at the smallest step of the font ramp 100 characters is
+ * five lines across the top third of the frame, over the speaker's face, for
+ * three seconds. 90 leaves every genuine hook untouched and clips only the
+ * longest titles.
+ */
+export const HOOK_MAX_CHARS = 90;
+
+/**
+ * Trim to HOOK_MAX_CHARS at a word boundary.
+ *
+ * The ellipsis is added ONLY when something was actually cut, and it is there on
+ * purpose: a sentence that stops mid-thought with no mark reads as a rendering
+ * bug, while one that stops with a mark reads as a deliberate tease. Falls back
+ * to a hard slice for a single unbroken 90-character token, which is not English
+ * but is the kind of thing a transcript of a URL produces.
+ */
+function clampHookLength(text: string): string {
+  if (text.length <= HOOK_MAX_CHARS) return text;
+  const cut = text.slice(0, HOOK_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  const body = lastSpace > HOOK_MAX_CHARS * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return body.replace(/[\s,;:.!?-]+$/, "") + "…";
+}
+
+/**
+ * Clean up one hook string as the model wrote it.
+ *
+ * Everything here is a failure mode actually worth guarding, given the model is
+ * deepseek-v4-flash with reasoning DISABLED (see config/ai.ts) — the regime where
+ * a secondary field comes back decorated or quoted rather than plain. Applied at
+ * write time in the pipeline AND on read, because the rows written before any of
+ * this existed have had none of it:
+ *
+ *   - Wrapping quotes. `"Stop doing this!"` drawn literally puts quote marks on
+ *     the video, and the prompt's own example is quoted, which invites it.
+ *   - Newlines and runs of spaces. The overlay wraps text itself; a newline the
+ *     model chose fights the box width and strands one word on a line.
+ *   - A trailing full stop, comma or ellipsis. A period at the end of type this
+ *     size reads as a typo; a question or exclamation mark is meaning and stays.
+ *   - Markdown asterisks, which json_object mode does not prevent.
+ */
+export function normalizeHookText(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  let text = raw.replace(/\s+/g, " ").trim();
+  // Repeatedly, because `""Stop this""` and `"'Stop this'"` both occur.
+  for (let i = 0; i < 3; i++) {
+    const unwrapped = text.replace(/^["'“”‘’*]+|["'“”‘’*]+$/g, "").trim();
+    if (unwrapped === text) break;
+    text = unwrapped;
+  }
+  // Only the marks that carry no meaning. `?` and `!` are the hook's whole tone.
+  text = text.replace(/[.,;:\u2026]+$/g, "").trim();
+  return clampHookLength(text);
+}
+
+/**
  * The words to draw for a clip, or "" for nothing.
  *
  * `hookText` first because it is written FOR this job: max ten words, in the
@@ -103,9 +163,9 @@ export function resolveHookText(short: {
   hookText?: string | null;
   title?: string | null;
 }): string {
-  const hook = (short.hookText ?? "").trim();
+  const hook = normalizeHookText(short.hookText);
   if (hook) return hook;
-  const title = (short.title ?? "").trim();
+  const title = normalizeHookText(short.title);
   if (!title || PLACEHOLDER_TITLES.has(title.toLowerCase())) return "";
   return title;
 }
