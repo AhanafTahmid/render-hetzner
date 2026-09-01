@@ -91,15 +91,20 @@ export type HookDuration = "2" | "3" | "4" | "5" | "full";
 export const HOOK_DURATIONS: readonly HookDuration[] = ["2", "3", "4", "5", "full"];
 
 /**
- * The whole clip, by default.
+ * Three seconds, by default.
  *
- * The hook is what a scroller reads before deciding to watch, and it is also
- * what someone arriving mid-clip reads. Neither is served by a hook that has
- * already gone. A shorter setting is there for footage that puts a face at the
- * top of the frame, which is a real reason to get out of the way — but it should
- * be a choice, not the starting position.
+ * Long enough to read one line and decide, then out of the way — the top of the
+ * frame is where a lot of podcast footage puts the speaker's head, and covering a
+ * face for forty seconds costs more than it buys. "full" is one click away for
+ * anyone who wants the scroller arriving late to see it too.
+ *
+ * Note this is a DURATION default and says nothing about the start: the hook is
+ * at full opacity on frame 0 either way. Those two got conflated once — the
+ * default was briefly "full" on the reading that "floats from the start" meant
+ * "never leaves" — and the distinction is worth keeping separate, because the
+ * frame-0 guarantee is not negotiable while the duration always was.
  */
-export const DEFAULT_HOOK_DURATION: HookDuration = "full";
+export const DEFAULT_HOOK_DURATION: HookDuration = "3";
 
 /**
  * Accepts the string form the UI sends AND a bare number, because a JSON body is
