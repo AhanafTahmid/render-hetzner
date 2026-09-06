@@ -31,6 +31,51 @@ export function mainBox(split: SplitSide | null): React.CSSProperties {
     : { position: "absolute", left: 0, right: 0, bottom: 0, height: "50%", overflow: "hidden" };
 }
 
+// ─── Multi-speaker stacks ────────────────────────────────────────────────────
+//
+// A face-tracked clip can arrive with two, three or four speakers already
+// stacked into the frame by ffmpeg (see lib/facetrack.ts). The composition does
+// not lay that out — it plays the pre-cropped file — but it does have to know
+// where the seams are, because that is where the captions go.
+
+/**
+ * The seam a stack of `slots` speakers puts its captions on, as a fraction of
+ * frame height.
+ *
+ * Two bands and a 2x2 grid both seam across the middle. Three bands seam at a
+ * third and two thirds, and the captions take the LOWER one: it is nearest the
+ * height captions sit at on an unstacked clip, so they move the least when the
+ * source cuts in and out of the stack, and it leaves the top two speakers — the
+ * two the eye reads first — completely clear.
+ *
+ * Anything unrecognised falls back to the middle, which is what every stacked
+ * clip written before the stack could hold more than two people was.
+ */
+export function stackSeamY(slots: number | null | undefined): number {
+  return slots === 3 ? 2 / 3 : 0.5;
+}
+
+/**
+ * The seam the HOOK TITLE sits on in a stacked clip, as a fraction of frame
+ * height.
+ *
+ * A hook normally rides near the top of the frame, which is correct on an
+ * ordinary clip — nothing is up there but headroom. On a stack it is not: the
+ * top band is a whole speaker, cropped to their face, and the headline lands
+ * across their forehead. The seam is the one horizontal line in a stacked frame
+ * that covers nobody, so that is where the hook goes.
+ *
+ * Two bands and a 2x2 of four both seam across the middle, and the hook takes
+ * it. Three bands have TWO seams — a third and two thirds — so the hook takes
+ * the upper one and the captions keep the lower one (see stackSeamY), and the
+ * two never have to negotiate. Only the two-band and four-up cases have a
+ * single seam that both want; RemotionShortPlayer resolves that by dropping the
+ * captions back to the bottom for as long as the hook is on screen.
+ */
+export function hookSeamY(slots: number | null | undefined): number {
+  return slots === 3 ? 1 / 3 : 0.5;
+}
+
 /** The split of whichever cutaway covers `frame`, or null when none does. */
 export function activeSplitAt(tracks: unknown[], frame: number): SplitSide | null {
   for (const t of tracks) {

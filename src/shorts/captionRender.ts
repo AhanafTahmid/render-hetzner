@@ -259,32 +259,40 @@ export function captionWordStyle(style: CaptionRenderStyle, isActive: boolean): 
 /**
  * The container for the active caption group.
  *
- * `atSplitSeam` moves the captions to the middle of the frame for the frames a
- * B-roll cutaway is on screen.
+ * `atSplitSeam` moves the captions onto a seam between two stacked pictures for
+ * the frames one is on screen — `true` for the middle of the frame, or a
+ * fraction of the frame height for a seam that is not the middle. `false` (the
+ * default) leaves them at their normal height.
  *
- * A cutaway is a 50/50 top-bottom split (see splitLayout.ts), so the normal
- * `positionBottom` of 18% lands the captions in the lower-middle of whichever
- * half is at the bottom — usually squarely over the stock footage, hiding the
- * thing the cutaway was added to show. Centred on the seam the block straddles
- * the boundary instead: it reads as the divider between the two shots, covers
- * the least of either, and the captions do not jump when the cutaway ends,
- * because the seam is where the eye already is.
+ * A B-roll cutaway is a 50/50 top-bottom split (see splitLayout.ts), so the
+ * normal `positionBottom` of 18% lands the captions in the lower-middle of
+ * whichever half is at the bottom — usually squarely over the stock footage,
+ * hiding the thing the cutaway was added to show. Centred on the seam the block
+ * straddles the boundary instead: it reads as the divider between the two
+ * shots, covers the least of either, and the captions do not jump when the
+ * cutaway ends, because the seam is where the eye already is.
  *
- * Centring is done with `top: 50%` + `translateY(-50%)` rather than a percentage
+ * The same argument holds for a multi-speaker stack, which is why the seam is a
+ * fraction rather than a flag: two speakers and a 2x2 of four both seam across
+ * the middle, but three stacked bands have their seams at a third and two
+ * thirds, and 50% there is the middle speaker's mouth.
+ *
+ * Centring is done with `top` + `translateY(-50%)` rather than a percentage
  * `bottom`, so the block's own height is what gets centred — a one-line and a
  * two-line group both sit balanced across the seam instead of the two-line one
  * hanging below it.
  */
 export function captionGroupStyle(
   style: CaptionRenderStyle & { positionBottom?: number; layout?: "inline" | "stacked" },
-  atSplitSeam = false
+  atSplitSeam: boolean | number = false
 ): CSSProperties {
   const layout = style.layout ?? "inline";
   const stacked = layout === "stacked";
+  const seam = atSplitSeam === true ? 0.5 : atSplitSeam === false ? null : atSplitSeam;
   return {
     position: "absolute",
-    ...(atSplitSeam
-      ? { top: "50%", transform: "translateY(-50%)" }
+    ...(seam !== null
+      ? { top: `${(seam * 100).toFixed(2)}%`, transform: "translateY(-50%)" }
       : { bottom: `${style.positionBottom ?? 18}%` }),
     left: 72,
     right: 72,

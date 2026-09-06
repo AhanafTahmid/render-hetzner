@@ -18,7 +18,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { splitBox, mainBox, activeSplitAt, mainObjectPosition } from "../shorts/splitLayout";
+import { splitBox, mainBox, activeSplitAt, mainObjectPosition, stackSeamY, hookSeamY } from "../shorts/splitLayout";
 import { captionGroupStyle, captionWordStyle, type CaptionRenderStyle } from "../shorts/captionRender";
 import {
   DEFAULT_HOOK_COLOR,
@@ -120,6 +120,7 @@ function HookTitleOverlay({
   frame,
   fps,
   durationInFrames,
+  seam,
 }: {
   text: string;
   style: HookStyleId;
@@ -128,6 +129,12 @@ function HookTitleOverlay({
   frame: number;
   fps: number;
   durationInFrames: number;
+  /**
+   * Fraction of frame height to centre the headline on, or null for the usual
+   * position near the top. Non-null only on a stacked multi-speaker frame — see
+   * hookSeamY.
+   */
+  seam: number | null;
 }) {
   const { width, height } = useVideoConfig();
 
@@ -156,9 +163,21 @@ function HookTitleOverlay({
     <div
       style={{
         position: "absolute",
-        // 7% of the height clears the platform chrome (TikTok's top row, the
-        // Reels header) that would otherwise sit on the first line.
-        top: height * 0.07,
+        ...(seam !== null
+          ? {
+              // Centred ON the seam rather than hung below it: the headline is
+              // usually two or three lines, and anchoring one edge would push
+              // the block entirely into one speaker's band. Balanced across the
+              // seam it eats a little of each, which is what the eye reads as
+              // "between them".
+              top: height * seam,
+              transform: "translateY(-50%)",
+            }
+          : {
+              // 7% of the height clears the platform chrome (TikTok's top row,
+              // the Reels header) that would otherwise sit on the first line.
+              top: height * 0.07,
+            }),
         left: width * 0.07,
         right: width * 0.07,
         display: "flex",
@@ -422,6 +441,7 @@ export const ShortComposition = ({
   extraTracks,
   faceFocusY,
   speakerLayout,
+  speakerSlots,
   stackedRanges,
   mainSegments,
   hideMainVideo,
@@ -543,24 +563,62 @@ export const ShortComposition = ({
   // ranges below — has to be looked up through the cut, not past it.
   const clipTime = clipTimeAt(placedSegments, frame, fps);
 
-  // A two-speaker clip arrives already stacked — face tracking encoded the two
+  // A multi-speaker clip arrives already stacked — face tracking encoded the
   // crops into the file, so there is nothing for this composition to lay out.
-  // What it does owe the clip is the caption position: the seam at 50% is the
-  // one band that covers neither face, and it is where a split cutaway already
-  // puts them, so the two cases look the same.
+  // What it does owe the clip is the caption position: a seam between two bands
+  // is the one place that covers no face, and it is where a split cutaway
+  // already puts them, so the two cases look the same. `speakerSlots` says
+  // which seam — see stackSeamY, since a stack of three does not have one in
+  // the middle.
   //
   // Per frame, because the stack is per SEGMENT. A podcast master cuts between
-  // a wide two-shot and single close-ups, so face tracking stacks the stretches
-  // that hold both speakers and runs its single-speaker camera over the rest —
-  // and `stackedRanges` says which frames are which. Pinning the captions to
-  // the seam for the whole clip parks them across the face of every close-up in
-  // it, which is exactly what a two-speaker clip looked like before this.
+  // a wide group shot and single close-ups, so face tracking stacks the
+  // stretches that hold everybody and runs its single-speaker camera over the
+  // rest — and `stackedRanges` says which frames are which. Pinning the
+  // captions to the seam for the whole clip parks them across the face of every
+  // close-up in it, which is exactly what a two-speaker clip looked like before
+  // this.
   //
   // `stackedRanges` is the ONLY thing that raises the captions; `speakerLayout`
   // just confirms the clip is the kind that can have them. A clip with no
   // ranges gets ordinary bottom captions — see `withinRanges` for why the
   // unknown case resolves that way rather than the other.
   const stackedSpeakers = speakerLayout === "split" && withinRanges(stackedRanges, clipTime);
+
+  // ── Where the hook title goes ──────────────────────────────────────────────
+  //
+  // Near the top of the frame on an ordinary clip, and on the seam of a stacked
+  // one. The top of a stacked frame is not headroom, it is the first speaker's
+  // face — a headline parked there sits across their forehead for the whole
+  // hook. See hookSeamY.
+  //
+  // A B-roll cutaway is deliberately NOT a reason to move it: the cutaway takes
+  // half the frame and the speaker keeps the other half, so the top of the
+  // frame is still either a picture that can carry text or a face the hook was
+  // always going to sit above.
+  const hasHook = typeof hookText === "string" && hookText.trim() !== "";
+  const hookSeam = hasHook && stackedSpeakers ? hookSeamY(Number(speakerSlots) || 2) : null;
+  // Is the headline actually on screen at THIS frame? A hook is usually set to
+  // 3 seconds, so for most of the clip the answer is no and the captions are
+  // free to take the seam back.
+  const hookOnScreen =
+    hasHook &&
+    frame < hookVisibleFrames(sanitizeHookDuration(hookDuration), fps, durationInFrames);
+
+  // false, or the fraction of frame height the captions sit on. A B-roll
+  // cutaway always seams at the middle, and it wins when both are on screen:
+  // its own half-frame geometry is what the captions have to clear.
+  const rawCaptionSeam =
+    activeSplit !== null ? true : stackedSpeakers ? stackSeamY(Number(speakerSlots) || 2) : false;
+
+  // Two bands (and a 2x2 of four) have exactly ONE seam, and both the hook and
+  // the captions want it. The hook wins for as long as it is up — it is the
+  // line the viewer has to read first, and it is gone in a few seconds —— so
+  // the captions spend that time at their ordinary bottom position rather than
+  // underneath it. A three-band stack never reaches this: hookSeamY takes the
+  // upper seam and stackSeamY the lower, so they do not collide.
+  const captionSeam =
+    hookOnScreen && hookSeam !== null && rawCaptionSeam === hookSeam ? false : rawCaptionSeam;
 
   return (
     <AbsoluteFill className="bg-black">
@@ -611,7 +669,7 @@ export const ShortComposition = ({
               render server, so this preview cannot drift from the export.
               While a cutaway is up the captions move to the split seam — at the
               normal bottom position they sit on top of the stock footage. */}
-          <div style={captionGroupStyle(style, activeSplit !== null || stackedSpeakers)}>
+          <div style={captionGroupStyle(style, captionSeam)}>
             {activeGroup.words.map((w: any, i: number) => (
               <span key={i} style={captionWordStyle(style, currentTime >= w.start && currentTime <= w.end)}>
                 {w.text || w.punctuated_word || w.word}
@@ -622,23 +680,24 @@ export const ShortComposition = ({
       )}
 
       {/* Hook title, static and on from frame 0 for its chosen duration.
-          Drawn AFTER the captions so it wins any overlap — the two sit at
-          opposite ends of the frame, but a stacked two-speaker clip moves the
-          captions to the seam and a long hook reaches down, and where they do
-          meet the hook is the thing the viewer needs first. The absence of text is the
-          only "off" switch it has: lib/shortRenderInput.ts already collapses
-          "hooks disabled", "caller passed no settings" and "this clip has no
-          usable hook line" into one missing prop, so there is nothing to check
-          twice here. */}
-      {typeof hookText === "string" && hookText.trim() !== "" && (
+          Drawn AFTER the captions so it wins any overlap. On a stacked clip the
+          two are kept apart on purpose — `captionSeam` above hands the seam to
+          the hook while it is up — but a long headline can still reach further
+          than expected, and the hook is the line the viewer has to read first.
+          The absence of text is the only "off" switch it has:
+          lib/shortRenderInput.ts already collapses "hooks disabled", "caller
+          passed no settings" and "this clip has no usable hook line" into one
+          missing prop, so there is nothing to check twice here. */}
+      {hasHook && (
         <HookTitleOverlay
-          text={hookText.trim()}
+          text={(hookText as string).trim()}
           style={sanitizeHookStyle(hookStyle)}
           color={sanitizeHookColor(hookColor, DEFAULT_HOOK_COLOR)}
           duration={sanitizeHookDuration(hookDuration)}
           frame={frame}
           fps={fps}
           durationInFrames={durationInFrames}
+          seam={hookSeam}
         />
       )}
 
