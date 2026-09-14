@@ -475,15 +475,11 @@ export const ShortComposition = ({
   /**
    * How far into `videoUrl` the source's own zero sits.
    *
-   * 0 for a whole-video source — every direct upload, and every short rendered
-   * before two-phase imports existed — so `fromFrame` is unchanged for them and
-   * no existing export's hash moves. On a two-phase import the app never
-   * downloads the whole video: `videoUrl` is the clip's OWN range, which begins
-   * `sourceOffset` seconds into the source, so seeking to the source-absolute
-   * `st` would land far past the clip (or off the end of the file entirely).
-   *
-   * Only reached when there is no face-tracked crop, which is the fallback path
-   * — the crop already starts at its own zero and takes the branch above.
+   * 0 for a whole-video source, which is every direct upload and everything
+   * rendered before two-phase imports existed — so `fromFrame` is unchanged for
+   * them. On a two-phase import `videoUrl` is the clip's OWN range, which
+   * begins `sourceOffset` seconds into the source, and seeking to `st` there
+   * would land a minute or more past the clip.
    */
   const srcOffset = Number(sourceOffset ?? 0);
   const fromFrame = isPlayable(croppedVideoUrl) ? 0 : Math.floor((st - srcOffset) * fps);
