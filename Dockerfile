@@ -4,6 +4,18 @@ WORKDIR /app
 
 # Chromium shared libraries (derived from ldd on the Chromium binary — any
 # missing one crashes at render time).
+# ffmpeg for the FACE TRACKER, not for renders.
+#
+# Remotion ships its own ffmpeg, and the vendored face-tracking pipeline spawns
+# ffmpeg-static for encoding — but it probes sources with a bare `ffprobe` on
+# PATH (src/facetrack/facetrack.ts), which neither of those provides. Without
+# this, every crop falls through its retries to a centre crop and silently stops
+# following the speaker: detection needs the stream dimensions to size its
+# detection frames.
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN apt-get update && apt-get install -y \
     libnss3 \
     libdbus-1-3 \

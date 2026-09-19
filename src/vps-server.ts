@@ -41,6 +41,7 @@ import {
   VIDEO_CODEC,
 } from "./constants.ts";
 import type { JsonObject } from "./types.ts";
+import { FacetrackPool } from "./facetrack/pool.ts";
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -89,6 +90,46 @@ const MAX_QUEUE_DEPTH = intEnv("MAX_QUEUE_DEPTH", 50);
 const JOB_TIMEOUT_MS = intEnv("RENDER_JOB_TIMEOUT_MS", 15 * 60 * 1000);
 const JOB_RETENTION_MS = intEnv("JOB_RETENTION_MS", 24 * 60 * 60 * 1000);
 const DELAY_RENDER_TIMEOUT_MS = intEnv("DELAY_RENDER_TIMEOUT_MS", 300_000);
+
+/**
+ * Face-tracking pool size. See src/facetrack/pool.ts for the measured curve —
+ * 8 is where throughput stops improving on this box and only latency grows.
+ *
+ * The second number is the cap while a render is in flight, and it is the one
+ * that needed measuring. Both workloads want the same sixteen cores, and this
+ * box is already saturated by either alone: overlapping them is worth about
+ * nothing in total (141.9 s together against 143.0 s back to back), so the cap
+ * is not buying throughput — it is choosing who waits.
+ *
+ * Measured 2026-09-19, two renders and sixteen crops submitted together, with
+ * a solo render at 38.4 s/job for reference:
+ *
+ *     cap 1   render 46.1 s/job (1.20x)   6.50 clips/min   combined 147.8 s
+ *     cap 2   render 55.3 s/job (1.44x)   6.99 clips/min   combined 137.4 s  <-
+ *     cap 3   render 66.1 s/job (1.72x)   6.77 clips/min   combined 141.9 s
+ *
+ * Two is the minimum for combined wall time, which is what a project's total
+ * processing time is made of, and it keeps the render penalty short of 1.5x.
+ * Drop it to 1 if render latency is ever what users complain about: that costs
+ * 7% of total pipeline time and hands the renders most of it back.
+ */
+const MAX_PARALLEL_FACETRACK = intEnv("MAX_PARALLEL_FACETRACK", 8);
+const MAX_PARALLEL_FACETRACK_BUSY = intEnv("MAX_PARALLEL_FACETRACK_BUSY", 2);
+/**
+ * How many crops may be waiting here before the server starts refusing them.
+ *
+ * Sized against what the app actually sends: processVideo runs at most five
+ * projects at once and each holds at most twelve clips in this queue
+ * (MAX_CROPS_IN_FLIGHT_PER_PROJECT), so 60 in normal operation. 128 leaves room
+ * for re-trims and rescue crops to get in alongside a busy import.
+ *
+ * The real backlog does NOT live here. A hundred submitted videos wait in
+ * Inngest, which is durable and survives this container being rebuilt; this
+ * queue is just the buffer that keeps the workers fed. A 429 is backpressure,
+ * not failure — the app keeps the clip queued and feeds it in when a slot frees.
+ */
+const MAX_FACETRACK_QUEUE_DEPTH = intEnv("MAX_FACETRACK_QUEUE_DEPTH", 128);
+const FACETRACK_RETENTION_MS = intEnv("FACETRACK_RETENTION_MS", 6 * 60 * 60 * 1000);
 /**
  * OffthreadVideo frame cache. 4 GB keeps source clips decoded in RAM. Sized for
  * the 32 GB box: 16 Chromium tabs need headroom, so this stays well under half.
@@ -139,11 +180,39 @@ const r2 = new S3Client({
   },
 });
 
+/**
+ * Which GL backend Chromium rasterises with.
+ *
+ * Still software in every case — this box has no GPU the container can reach
+ * (no `devices:` mapping, and `/dev/dri` does not exist inside it), so ANGLE
+ * runs over SwiftShader either way. `gl` only picks which code path gets there.
+ *
+ * Measured 2026-09-19 on the CX53, shortshero `render`, a real face-tracked
+ * 1080x1920 source with 96 real caption words, two jobs per run:
+ *
+ *     swangle   122.6 s   (61.3 s/job)   <- what this used to be
+ *     angle      76.7 s   (38.4 s/job)   1.60x faster, reproduced twice
+ *
+ * Output is equivalent, not merely close: SSIM 0.9905 / PSNR 45.8 dB average
+ * (min 43.9) between the two renders of the same job, and an amplified
+ * difference map shows only anti-aliasing fringes on edges and glyph borders —
+ * captions land on the same pixels, nothing is missing. Part of even that is
+ * the two separate h264 encodes, not rasterisation.
+ *
+ * Kept overridable because this is exactly the kind of flag that behaves
+ * differently on a box with a real GPU, and because `swangle` is the documented
+ * escape hatch if a future composition's WebGL content misbehaves under plain
+ * `angle`.
+ */
+const GL_BACKENDS = ["angle", "angle-egl", "egl", "swangle", "swiftshader", "vulkan"] as const;
+type GlBackend = (typeof GL_BACKENDS)[number];
+const glBackend: GlBackend = GL_BACKENDS.includes(process.env.RENDER_GL as GlBackend)
+  ? (process.env.RENDER_GL as GlBackend)
+  : "angle";
+
 const chromiumOptions: ChromiumOptions = {
   enableMultiProcessOnLinux: true,
-  // Software GL (SwiftShader + ANGLE): the VPS has no GPU, and leaving gl unset
-  // can crash the GL context on WebGL/canvas content.
-  gl: "swangle",
+  gl: glBackend,
 };
 
 // ── Warm browser (shared across all jobs) ─────────────────────────────────────
@@ -206,6 +275,41 @@ const queue: string[] = [];
 const cancelers = new Map<string, () => void>();
 let runningJobs = 0;
 
+// ── Face-tracking job store ───────────────────────────────────────────────────
+//
+// Deliberately NOT in the render journal. A render is minutes of work worth
+// resuming across a restart; a crop is seconds, and the app already treats a
+// missing or failed crop as "retry it". Persisting these would buy nothing and
+// give the journal a second schema to stay compatible with.
+
+type FacetrackStatus = "queued" | "cropping" | "completed" | "failed";
+
+interface FacetrackJob {
+  facetrackJobId: string;
+  idempotencyKey: string;
+  outputKey: string;
+  status: FacetrackStatus;
+  error?: string;
+  url?: string;
+  faceFocusY?: number;
+  tracked?: boolean;
+  speakerLayout?: string;
+  speakerSlots?: number | null;
+  stackedRanges?: { start: number; end: number }[];
+  createdAt: number;
+  completedAt?: number;
+}
+
+const facetrackJobs = new Map<string, FacetrackJob>();
+const facetrackByIdempotencyKey = new Map<string, string>();
+
+const facetrackPool = new FacetrackPool({
+  maxWorkers: MAX_PARALLEL_FACETRACK,
+  maxWorkersWhileRendering: MAX_PARALLEL_FACETRACK_BUSY,
+  isRenderBusy: () => runningJobs > 0,
+  tmpDir,
+});
+
 // ── Journal (crash recovery) ──────────────────────────────────────────────────
 
 let persistTimer: NodeJS.Timeout | null = null;
@@ -264,12 +368,24 @@ const pruneOldJobs = () => {
   persistSoon();
 };
 
+/**
+ * Directories under tmpDir that are NOT abandoned render workdirs.
+ *
+ * This sweep runs at boot and deletes every directory it finds, on the premise
+ * that each one is a workdir whose render died with the process. The
+ * face-tracking source cache lives here too and is not that: it is a warm cache
+ * shared by every clip of a video, with its own TTL, and wiping it on boot
+ * would make a deploy in the middle of an import re-download a source that can
+ * be hundreds of megabytes, once per clip still waiting.
+ */
+const TMP_KEEP = new Set(["facetrack-sources"]);
+
 const sweepOrphanedWorkdirs = async () => {
   try {
     const entries = await fs.readdir(tmpDir, { withFileTypes: true });
     await Promise.all(
       entries
-        .filter((entry) => entry.isDirectory())
+        .filter((entry) => entry.isDirectory() && !TMP_KEEP.has(entry.name))
         .map((entry) => fs.rm(path.join(tmpDir, entry.name), { recursive: true, force: true })),
     );
   } catch {
@@ -490,6 +606,14 @@ app.get("/health", (_req, res) => {
     maxParallelJobs: MAX_PARALLEL_JOBS,
     scale: RENDER_SCALE,
     crf: RENDER_CRF ?? 18,
+    gl: glBackend,
+    facetrack: {
+      running: facetrackPool.running,
+      queueDepth: facetrackPool.queueDepth,
+      downloading: facetrackPool.downloading,
+      maxWorkers: MAX_PARALLEL_FACETRACK,
+      maxWorkersWhileRendering: MAX_PARALLEL_FACETRACK_BUSY,
+    },
   });
 });
 
@@ -573,6 +697,138 @@ app.post("/jobs/:id/cancel", requireAuth, (req, res) => {
   res.json({ renderJobId: job.renderJobId, status: job.status });
 });
 
+// ── Face tracking ─────────────────────────────────────────────────────────────
+//
+// Same contract as /jobs: submit, poll, read the result. The app used to do
+// this work inside its own web process on the CX33 under a global limit of one
+// (shortshero/inngest/concurrency.ts), because a second concurrent crop there
+// exhausted the 3 GiB container and the run died as "Your server returned HTTP
+// 502 before the SDK responded". Measured 2026-09-19, the CX33 could not be
+// made faster by raising that limit either — 4 vCPU tops out at 4.27 clips/min
+// against 15.51 here. So the crop moves to the box with the cores, and the app
+// is left holding nothing heavier than an HTTP poll.
+
+const facetrackSchema = z.object({
+  videoUrl: z.string().min(1),
+  startTime: z.number().nonnegative(),
+  endTime: z.number().positive(),
+  outputKey: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+});
+
+const toFacetrackPayload = (job: FacetrackJob) => ({
+  facetrackJobId: job.facetrackJobId,
+  status: job.status,
+  ...(job.error ? { error: job.error } : {}),
+  ...(job.status === "completed"
+    ? {
+        url: job.url,
+        outputKey: job.outputKey,
+        faceFocusY: job.faceFocusY,
+        tracked: job.tracked,
+        speakerLayout: job.speakerLayout,
+        speakerSlots: job.speakerSlots ?? null,
+        stackedRanges: job.stackedRanges ?? [],
+      }
+    : {}),
+});
+
+app.post("/facetrack", requireAuth, (req, res) => {
+  const parsed = facetrackSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const request = parsed.data;
+
+  if (request.endTime <= request.startTime) {
+    res.status(400).json({ error: "endTime must be greater than startTime" });
+    return;
+  }
+
+  // Same idempotency rule as renders: replaying a key returns the live job,
+  // unless it failed, in which case this is a retry and gets a fresh attempt.
+  const existingId = facetrackByIdempotencyKey.get(request.idempotencyKey);
+  const existing = existingId ? facetrackJobs.get(existingId) : undefined;
+  if (existing && existing.status !== "failed") {
+    res.json(toFacetrackPayload(existing));
+    return;
+  }
+
+  // Backpressure, not failure. The app resubmits on a later tick rather than
+  // marking a clip broken — see isQueueFullError in shortshero/lib.
+  if (facetrackPool.queueDepth >= MAX_FACETRACK_QUEUE_DEPTH) {
+    res.status(429).json({
+      error: `Face-tracking queue is full (${MAX_FACETRACK_QUEUE_DEPTH} jobs)`,
+    });
+    return;
+  }
+
+  const job: FacetrackJob = {
+    facetrackJobId: crypto.randomUUID(),
+    idempotencyKey: request.idempotencyKey,
+    outputKey: request.outputKey,
+    status: "queued",
+    createdAt: Date.now(),
+  };
+  facetrackJobs.set(job.facetrackJobId, job);
+  facetrackByIdempotencyKey.set(job.idempotencyKey, job.facetrackJobId);
+
+  void facetrackPool
+    .submit({
+      id: job.facetrackJobId,
+      videoUrl: request.videoUrl,
+      startTime: request.startTime,
+      endTime: request.endTime,
+      outputKey: request.outputKey,
+    })
+    .then((result) => {
+      job.completedAt = Date.now();
+      if (result.ok) {
+        job.status = "completed";
+        job.url = result.url;
+        job.faceFocusY = result.faceFocusY;
+        job.tracked = result.tracked;
+        job.speakerLayout = result.speakerLayout;
+        job.speakerSlots = result.speakerSlots ?? null;
+        job.stackedRanges = result.stackedRanges ?? [];
+        console.log(
+          `[facetrack] ${job.facetrackJobId} → ${result.url}` +
+            (result.tracked ? "" : " (centre crop — detection unavailable)"),
+        );
+      } else {
+        job.status = "failed";
+        job.error = result.error ?? "Face tracking failed";
+        console.error(`[facetrack] ${job.facetrackJobId} failed: ${job.error}`);
+      }
+    });
+
+  job.status = "cropping";
+  res.status(202).json(toFacetrackPayload(job));
+});
+
+app.get("/facetrack/:id", (req, res) => {
+  const job = facetrackJobs.get(String(req.params.id));
+  if (!job) {
+    res.status(404).json({ error: "Face-tracking job not found" });
+    return;
+  }
+  res.json(toFacetrackPayload(job));
+});
+
+/** Drops finished crops the app has had ample time to read. */
+const pruneFacetrackJobs = () => {
+  const cutoff = Date.now() - FACETRACK_RETENTION_MS;
+  for (const [id, job] of facetrackJobs) {
+    if (job.completedAt && job.completedAt < cutoff) {
+      facetrackJobs.delete(id);
+      if (facetrackByIdempotencyKey.get(job.idempotencyKey) === id) {
+        facetrackByIdempotencyKey.delete(job.idempotencyKey);
+      }
+    }
+  }
+};
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 const shutdown = async (signal: string) => {
@@ -582,6 +838,7 @@ const shutdown = async (signal: string) => {
   setTimeout(() => process.exit(0), 10_000);
   await persistNow();
   await closeBrowser();
+  await facetrackPool.shutdown();
   process.exit(0);
 };
 
@@ -593,6 +850,8 @@ const main = async () => {
   await restoreJournal();
   await sweepOrphanedWorkdirs();
   setInterval(pruneOldJobs, 60 * 60 * 1000).unref();
+  setInterval(pruneFacetrackJobs, 30 * 60 * 1000).unref();
+  setInterval(() => void facetrackPool.sweepSources(), 30 * 60 * 1000).unref();
 
   app.listen(port, () => {
     console.log(
@@ -600,7 +859,8 @@ const main = async () => {
         `(concurrency=${RENDER_CONCURRENCY}, ` +
         `parallelJobs=${MAX_PARALLEL_JOBS}, jobTimeout=${Math.round(JOB_TIMEOUT_MS/60000)}m, ` +
         `scale=${RENDER_SCALE}, x264Preset=${x264Preset ?? "medium (default)"}, ` +
-        `crf=${RENDER_CRF ?? "18 (Remotion default)"})`,
+        `crf=${RENDER_CRF ?? "18 (Remotion default)"}, gl=${glBackend}, ` +
+        `facetrack=${MAX_PARALLEL_FACETRACK}/${MAX_PARALLEL_FACETRACK_BUSY} workers)`,
     );
     if (!authToken) console.warn("WARNING: RENDER_SERVER_TOKEN not set — set it in production!");
     // Warm the browser so the first job skips the Chromium cold start.
