@@ -14,8 +14,29 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { createReadStream } from "fs";
 
-const bucket = process.env.R2_BUCKET ?? "";
-const publicUrl = (process.env.R2_PUBLIC_URL ?? "").replace(/\/$/, "");
+/**
+ * Face-tracked clips do NOT go in the render bucket.
+ *
+ * This box writes finished renders to `R2_BUCKET` (`render`, published at
+ * render.shortshero.com). Face-tracked clips have always lived in the APP's
+ * upload bucket (`shortshero`, published at cdn.shortshero.com), because that
+ * is where the app's own crop path put them and where everything downstream
+ * expects them: the editor preview loads that URL, and `r2LocationFromUrl` in
+ * the app resolves it back to a bucket in order to presign it for a render.
+ *
+ * Getting this wrong is not a cosmetic mismatch. A clip written to `render`
+ * would come back as a render.shortshero.com URL, which the app maps to its
+ * EXPORT base — and `CLOUDFLARE_R2_EXPORT_BUCKET_NAME` is unset there, so that
+ * base falls back to the upload bucket. The app would then presign
+ * `shortshero/facetracked/<id>.mp4`, a key that only exists in `render`, and R2
+ * answers NoSuchKey. The render fails on a file that uploaded perfectly.
+ *
+ * So these are their own variables, defaulting to the render bucket only so a
+ * deployment where one bucket fronts everything still works.
+ */
+const bucket = process.env.FACETRACK_R2_BUCKET || process.env.R2_BUCKET || "";
+const publicUrl = (process.env.FACETRACK_R2_PUBLIC_URL || process.env.R2_PUBLIC_URL || "")
+  .replace(/\/$/, "");
 
 const r2 = new S3Client({
   region: "auto",

@@ -613,6 +613,11 @@ app.get("/health", (_req, res) => {
       downloading: facetrackPool.downloading,
       maxWorkers: MAX_PARALLEL_FACETRACK,
       maxWorkersWhileRendering: MAX_PARALLEL_FACETRACK_BUSY,
+      // Surfaced because writing crops to the render bucket instead of the
+      // app's upload bucket fails the RENDER, not the upload — see the note in
+      // src/facetrack/r2.ts. This makes the mistake visible from /health.
+      bucket: process.env.FACETRACK_R2_BUCKET || r2Bucket,
+      publicUrl: (process.env.FACETRACK_R2_PUBLIC_URL || r2PublicUrl).replace(/\/$/, ""),
     },
   });
 });
