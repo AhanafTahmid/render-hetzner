@@ -747,6 +747,16 @@ export interface CropResult {
    * range covering the clip when the whole clip is a stack.
    */
   stackedRanges?: TimeRange[];
+  /**
+   * Why no stack was even CONSIDERED — set only when the speaker probe could
+   * not run in this environment, never when it ran and found nothing.
+   *
+   * Carried out to the caller so the failure shows up where somebody is
+   * looking. A stack that silently stops happening looks exactly like a clip
+   * that never had two speakers in it, which is how this went unnoticed for
+   * three days; see POSE_DETECTOR_PACKAGES.
+   */
+  multiUpError?: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1142,6 +1152,68 @@ function buildCropXExpr(segments: CropSegment[]): string {
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let _poseDetector: Promise<any> | null = null;
 
+/**
+ * Packages `loadPoseDetector` needs at require time, beyond the one it names.
+ *
+ * `@tensorflow-models/pose-detection`'s entry point pulls in EVERY detector it
+ * ships, including the MediaPipe BlazePose one, whose module does a top-level
+ * `require("@mediapipe/pose")`. We never create that detector — we only ever
+ * ask for MoveNet — but the require happens anyway, so the package has to be
+ * installed or the whole module throws MODULE_NOT_FOUND.
+ *
+ * It is a PEER dependency of pose-detection, which is why this is a trap: pnpm
+ * installs peers automatically (auto-install-peers, on by default since pnpm 8)
+ * and npm does not — and the render server's image builds with
+ * `npm install --legacy-peer-deps`, which skips peers outright. So the app box
+ * had it, the render box did not, and moving face tracking to the render box on
+ * 2026-09-19 silently turned off every multi-speaker stack: 912 clips over three
+ * days came out as single-speaker crops, with nothing but a `console.warn` on a
+ * container nobody was reading to say so.
+ *
+ * Exported because `scripts/sync-facetrack.mjs --check` audits the render repo's
+ * package.json against it, so the next such peer cannot ship missing.
+ */
+export const POSE_DETECTOR_PACKAGES = [
+  "@tensorflow/tfjs",
+  "@tensorflow/tfjs-node",
+  "@tensorflow-models/pose-detection",
+  "@mediapipe/pose",
+] as const;
+
+/**
+ * Did the probe fail because it CANNOT RUN HERE, rather than because this clip
+ * defeated it?
+ *
+ * The two want opposite responses and used to get the same one. A clip the
+ * probe merely found nothing in is an ordinary single-speaker clip and the warn
+ * is right. A probe that cannot load its model is an environment fault that
+ * will hit EVERY clip this box ever sees, and it has to be impossible to miss —
+ * see POSE_DETECTOR_PACKAGES for what it cost the first time.
+ */
+function isProbeUnavailable(err: unknown): boolean {
+  const code = (err as { code?: string } | null | undefined)?.code;
+  if (code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND") return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /Cannot find module|Cannot find package|is not a function/i.test(msg);
+}
+
+/**
+ * Can the speaker probe run at all in this process?
+ *
+ * Answers the one question `/health` could not: BlazeFace loading tells you
+ * nothing about MoveNet, and a box where only MoveNet is broken produces
+ * perfectly good-looking single-speaker clips forever. Callers surface the
+ * message; they do not have to understand it.
+ */
+export async function poseDetectorHealth(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await loadPoseDetector();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message.split("\n")[0] : String(err) };
+  }
+}
+
 /** Loaded once per process, like the BlazeFace model below it. */
 function loadPoseDetector(): Promise<any> {
   _poseDetector ??= (async () => {
@@ -1374,8 +1446,17 @@ export interface FaceBox {
   h: number;
 }
 
-export interface MultiUpPlan {
-  /** How many people the stack holds — 2, 3 or 4. Drives the slot grid. */
+/**
+ * One stack shape and the stretches of clip it is on screen for.
+ *
+ * A clip can hold more than one of these, because a podcast master cuts between
+ * shots that hold different numbers of people: the source that prompted this
+ * cuts between a two-shot of the guests and a wide that also holds the host.
+ * Two people get a 50/50 split and three get three equal bands — that is the
+ * rule, and it is a rule about the SHOT, not about the clip.
+ */
+export interface MultiUpLayout {
+  /** How many people this stack holds — 2, 3 or 4. Drives the slot grid. */
   slots: number;
   /**
    * Crop size in source pixels — IDENTICAL for every speaker.
@@ -1383,6 +1464,11 @@ export interface MultiUpPlan {
    * Sizing each speaker's box from their own face would scale the heads
    * differently, which reads as a mistake even when it is a faithful record of
    * who is sitting closer to the camera. One box size, positioned N times.
+   *
+   * Per LAYOUT, not per clip: the wide three-shot and the tighter two-shot are
+   * different framings of the same room, and sizing both from one measurement
+   * would be the "mixing a wide shot's heads with a close-up's" mistake that
+   * `inKept` exists to prevent, one level up.
    */
   boxW: number;
   boxH: number;
@@ -1400,16 +1486,35 @@ export interface MultiUpPlan {
    */
   crops: { x: number; y: number }[];
   /**
-   * When the stack is on screen, in seconds from the START OF THE CLIP (not of
-   * the source). Disjoint, ascending, each at least MULTI_UP_MIN_RUN_S long.
+   * When this stack is on screen, in seconds from the START OF THE CLIP (not of
+   * the source). Disjoint, ascending, each at least MULTI_UP_MIN_RUN_S long,
+   * and disjoint from every OTHER layout's ranges as well.
    */
   ranges: TimeRange[];
-  /** Fraction of the clip's duration covered by `ranges`. */
+}
+
+export interface MultiUpPlan {
+  /**
+   * Every stack this clip uses, dominant first.
+   *
+   * "Dominant" is the one the old single-layout planner would have picked: the
+   * biggest group worth stacking, which owns its stretches outright. Any
+   * smaller group only gets the stretches the dominant one does not want — see
+   * `secondaryLayouts` for why that asymmetry is not arbitrary.
+   */
+  layouts: MultiUpLayout[];
+  /**
+   * The dominant layout's slot count, which is what a consumer that can only
+   * hold one number reads. Every range carries its own `slots` too.
+   */
+  slots: number;
+  /** Fraction of the clip's duration covered by ALL layouts together. */
   coverage: number;
   /**
-   * True when `ranges` cover essentially the whole clip, i.e. the source never
-   * cuts away from the group shot. The encode takes a cheaper path and the
-   * composition pins the captions to the seam throughout.
+   * True when the DOMINANT layout covers essentially the whole clip, i.e. the
+   * source never cuts away from the group shot. The encode takes a cheaper path
+   * and the composition pins the captions to the seam throughout. A clip with a
+   * second layout in it is never `whole` — there was something else to show.
    */
   whole: boolean;
 }
@@ -1418,6 +1523,54 @@ export interface MultiUpPlan {
 export interface TimeRange {
   start: number;
   end: number;
+  /**
+   * How many speakers the stack holds over this range — 2, 3 or 4.
+   *
+   * Present on every range a current encode produces. Absent on rows written
+   * before a clip could change shape mid-clip, where the clip's single
+   * `speakerSlots` is the answer for every range; consumers fall back to it.
+   */
+  slots?: number;
+}
+
+/** Total length of a set of disjoint ranges, in seconds. */
+function totalSecs(ranges: TimeRange[]): number {
+  return ranges.reduce((a, r) => a + Math.max(0, r.end - r.start), 0);
+}
+
+/** Every range a set of layouts already owns, ascending. */
+function takenRanges(layouts: MultiUpLayout[]): TimeRange[] {
+  return layouts.flatMap((l) => l.ranges).sort((a, b) => a.start - b.start);
+}
+
+/**
+ * `ranges` with every part of `taken` cut out of it, keeping only what is still
+ * long enough to cut to.
+ *
+ * A guard band on each side of the taken stretch, because a boundary is only
+ * ever located to within one probe sample: without it a second layout could cut
+ * in for the half second either side of a stretch the first one owns, which is
+ * a flash of the wrong shape rather than a shot. MULTI_UP_MIN_RUN_S is what a
+ * run has to be worth on its own, so a fragment shorter than that is dropped
+ * rather than shown.
+ */
+function subtractRanges(ranges: TimeRange[], taken: TimeRange[]): TimeRange[] {
+  const guard = MULTI_UP_MIN_RUN_S / 2;
+  let out: TimeRange[] = ranges.map((r) => ({ ...r }));
+  for (const t of taken) {
+    const next: TimeRange[] = [];
+    for (const r of out) {
+      const lo = t.start - guard;
+      const hi = t.end + guard;
+      if (r.end <= lo || r.start >= hi) { next.push(r); continue; }
+      if (r.start < lo) next.push({ start: r.start, end: lo });
+      if (r.end > hi) next.push({ start: hi, end: r.end });
+    }
+    out = next;
+  }
+  return out
+    .filter((r) => r.end - r.start >= MULTI_UP_MIN_RUN_S)
+    .sort((a, b) => a.start - b.start);
 }
 
 function median(xs: number[]): number {
@@ -1638,19 +1791,29 @@ function axisOf(axis: StackAxis, f: FaceBox): number {
  * `longestRunS` is reported even when nothing survives, so a rejection can say
  * by how much the clip missed.
  */
+/**
+ * One group size's case for owning (some of) the clip: the frames it was seen
+ * on, the stretches those frames make, and how much of the clip that is.
+ */
+interface Candidate {
+  /** How many heads this reading of the clip holds. */
+  size: number;
+  axis: StackAxis;
+  groups: { i: number; faces: FaceBox[] }[];
+  kept: { from: number; to: number }[];
+  ranges: TimeRange[];
+  stackedSecs: number;
+  longestRunS: number;
+  whole: boolean;
+}
+
 function buildStackRanges(
   groups: { i: number; faces: FaceBox[] }[],
   perFrame: FaceBox[][],
   sampleDur: number,
   clipDur: number,
   axis: StackAxis
-): {
-  kept: { from: number; to: number }[];
-  ranges: TimeRange[];
-  stackedSecs: number;
-  longestRunS: number;
-  whole: boolean;
-} {
+): Omit<Candidate, "size" | "axis" | "groups"> {
   const frames = perFrame.length;
   const isGroup = new Array<boolean>(frames).fill(false);
   for (const g of groups) isGroup[g.i] = true;
@@ -2022,200 +2185,212 @@ export function planMultiUp(
     );
   }
 
-  const { size: slots, axis, groups, kept, ranges, stackedSecs, whole } = chosen;
-  console.log(`[facetrack] Group sizes: ${summary} -> ${slots} slot(s) separated on ${axis}.`);
+  /**
+   * The finished stack for one candidate: its box size, its N crop windows and
+   * the stretches it is on screen for. Null when the candidate cannot be framed,
+   * with the reason logged.
+   *
+   * A closure rather than a free function because everything it measures is a
+   * property of THIS clip — the source size, the sampled frames, the reject
+   * logger — and passing eight of those through a signature buys nothing.
+   */
+  const buildLayout = (cand: Candidate, ranges: TimeRange[]): MultiUpLayout | null => {
+    const { size: slots, axis, groups, kept } = cand;
+    const stackedSecs = totalSecs(ranges);
 
-  const { cols, rows, slotW, slotH } = slotGeometry(slots);
-  const slotAspect = slotW / slotH;
-  const coverage = clipDur > 0 ? Math.min(1, stackedSecs / clipDur) : 0;
+    const { cols, rows, slotW, slotH } = slotGeometry(slots);
+    const slotAspect = slotW / slotH;
 
-  // ── Geometry, measured ONLY inside the kept ranges ────────────────────────
-  //
-  // This is the other half of the old bug. Sizing and placing the boxes from
-  // every detection in the clip mixed the wide shot's small heads with the
-  // close-ups' large ones, so an intercut source produced a box sized for
-  // neither. A close-up frame says nothing about where the speakers sit in the
-  // wide shot, so it does not get a vote.
-  const inKept = (i: number) => kept.some((r) => i >= r.from && i <= r.to);
-  const used = groups.filter((g) => inKept(g.i));
-  /** Every measurement of the person in slot k, over the frames we kept. */
-  const perSlot: FaceBox[][] = Array.from({ length: slots }, (_, k) => used.map((g) => g.faces[k]));
-
-  // Median throughout, for the reason the camera path uses one: a single box
-  // latched onto a hand or a bystander must not move the framing.
-  const faceH = median(perSlot.map((boxes) => median(boxes.map((f) => f.h))));
-  if (!(faceH > 0)) return reject("measured face height was zero");
-
-  // ── The crop is ALWAYS the slot's shape ───────────────────────────────────
-  //
-  // No pillarbox, no blurred backdrop: every crop is scaled straight into its
-  // slot and fills it edge to edge. That makes WIDTH the only free variable —
-  // height follows from it — and it makes the two competing pressures explicit:
-  //
-  //   want:  a width that puts the head at MULTI_UP_FACE_TARGET_H of the slot
-  //   cap:   a width that stops before the neighbour's face begins
-  //
-  // Wider than the cap and the band shows two people. Narrower than the want
-  // and the head is bigger than the slot, so the crop becomes a tight portrait
-  // of the face rather than a head-and-shoulders shot. On a source where the
-  // speakers sit far apart the cap never binds and the want is met exactly; on
-  // a tightly-packed panel layout the cap wins and the bands go close-up.
-  //
-  // ── The want ──
-  //
-  // A crop `boxW` wide scales into the slot by slotW/boxW, and because the crop
-  // is the slot's shape that is the same as slotH/boxH. So a head `faceHPx`
-  // tall lands at `faceHPx * slotAspect / boxW` of the slot's height, and
-  // solving that for the target gives the width below. For a wide two-shot
-  // (heads 0.115 of a 1080p frame) it comes out at 465x413 — the framing every
-  // two-speaker clip has shipped with, unchanged.
-  const targetH = MULTI_UP_FACE_TARGET_H[slots] ?? 0.30;
-  const faceHPx = faceH * srcH;
-  const wantW = (faceHPx * slotAspect) / targetH;
-
-  // ── The cap ──
-  //
-  // Measured on a 1280x720 three-panel podcast master (three portrait panels
-  // side by side, heads 0.51 of frame height, ~409px between adjacent heads):
-  // the want asked for a 1004px-wide crop out of 1280, so all three bands came
-  // out as the same shot of two men and the stack said nothing the source had
-  // not already said.
-  //
-  // So cap the width where the NEAREST NEIGHBOUR'S FACE starts. For each
-  // speaker, how far their window may reach from their own centre is whichever
-  // runs out first:
-  //
-  //   - the gap to a neighbour, less half that neighbour's face;
-  //   - the distance to the edge of the source.
-  //
-  // The frame edge belongs in that list because a window is clamped inside the
-  // source, and a clamped window is no longer centred on its speaker — it
-  // slides inward, straight into the neighbour it was sized to clear. Leaving
-  // it out sized the box off the middle speaker, whose neighbours are both far
-  // away, and the right-hand speaker's window then slid 97px left and took half
-  // the middle speaker's face with it.
-  //
-  // One box size positioned N times is what keeps every head at the same scale,
-  // so the cap is the tightest speaker's, not each speaker's own — and it has a
-  // floor, because a cap narrower than the face it is supposed to contain is
-  // not a crop of a person, it is a crop of a nose.
-  //
-  // ── …along whichever axis actually separates the speakers ──
-  //
-  // On a vertical rail the neighbour to clear is the one ABOVE and BELOW, and
-  // the horizontal distance to it is zero — feeding cx to the cap there asks
-  // the crop to stop before a face it is already centred on, which comes out
-  // negative and collapses the box onto the MIN_CROP_FACE_WIDTHS floor: a crop
-  // of a nose, three times over. So the room is measured along the separating
-  // axis, in that axis's units, and converted back to a width at the end. The
-  // crop is always the slot's shape, so a height cap IS a width cap.
-  const faceWPx = faceHPx / HEAD_ASPECT;
-  const cxs = perSlot.map((boxes) => median(boxes.map((f) => f.cx)));
-  const cys = perSlot.map((boxes) => median(boxes.map((f) => f.cy)));
-  const horizontal = axis === "x";
-  const isGrid = axis === "grid";
-
-  // ── Cells, for a 2x2 ──
-  //
-  // What a grid crop must stop at is not a neighbour's FACE but the panel
-  // SEAM: reach past it and the band shows a slice of the next camera's
-  // picture, which is the very thing a stacked frame exists to remove. (That
-  // artefact is visible on the pre-fix output of the Anuv Jain clip — the
-  // middle band carries the red wall and the black seam of the panel beside
-  // it.) The seam sits midway between the two column centres, and between the
-  // two row centres, read from the medians rather than assumed at the halfway
-  // line: a compositor is free to make its panels unequal, and this source's
-  // other layouts do exactly that.
-  //
-  // Row-major, matching `crops`: slot k is at column k % 2, row floor(k / 2).
-  // Midway between the two column centres is only an ESTIMATE of the seam, and
-  // it is biased by wherever the speakers happen to sit inside their panels: on
-  // the 20:14 shot the four faces put it at 0.48 of frame height against a true
-  // seam at 0.50, which leaves a 22px ribbon of the upper panel along the top of
-  // each lower cell. A compositor laying out four equal cameras splits evenly,
-  // so snap to the exact half whenever the estimate is already near it, and
-  // keep the estimate only for a grid that really is lopsided.
-  const snapSeam = (est: number) =>
-    Math.abs(est - 0.5) <= MULTI_UP_SEAM_SNAP ? 0.5 : est;
-  const xSeam = isGrid
-    ? snapSeam((median([cxs[0], cxs[2]]) + median([cxs[1], cxs[3]])) / 2) * srcW : 0;
-  const ySeam = isGrid
-    ? snapSeam((median([cys[0], cys[1]]) + median([cys[2], cys[3]])) / 2) * srcH : 0;
-  const cellOf = (k: number) => ({
-    x0: k % 2 === 0 ? 0 : xSeam,
-    x1: k % 2 === 0 ? xSeam : srcW,
-    y0: k < 2 ? 0 : ySeam,
-    y1: k < 2 ? ySeam : srcH,
-  });
-
-  // Extent of the source along the separating axis, the half-width of a face
-  // measured across that axis, and how a span along it becomes a crop width.
-  const span = horizontal ? srcW : srcH;
-  const halfFace = (horizontal ? faceWPx : faceHPx) / 2;
-  const toWidth = (alongAxis: number) => (horizontal ? alongAxis : alongAxis * slotAspect);
-  const centres = (horizontal ? cxs : cys).map((v) => v * span);
-  const halfAvail = centres.map((px, k) => {
-    const limits = [px, span - px];
-    if (k > 0) limits.push(px - centres[k - 1] - halfFace);
-    if (k < centres.length - 1) limits.push(centres[k + 1] - px - halfFace);
-    return Math.min(...limits);
-  });
-  const capW = isGrid
-    // The widest slot-shaped box that fits inside a cell, taken over the
-    // TIGHTEST cell so every head still comes out at one scale — the same
-    // "one box size positioned N times" rule the 1D cap follows.
+    // ── Geometry, measured ONLY inside the kept ranges ────────────────────────
     //
-    // Deliberately WITHOUT the MULTI_UP_MIN_CROP_FACE_WIDTHS floor that the 1D
-    // cap carries. A cell edge is not a neighbour's face, it is the edge of
-    // another camera's picture, so crossing it does not merely crowd the band —
-    // it puts a strip of a different shot in it. That is the case the 1D cap's
-    // own note already settles ("Letting the floor win there would put a sliver
-    // of the neighbour back in the band for nothing"), and it binds here far
-    // more often: a 960x540 panel holding a head 0.27 of frame height cannot
-    // give a 9:16 crop 1.6 face-widths wide without overflowing, so the floor
-    // would win on ordinary footage rather than in a corner. Measured on the
-    // 20:14 shot of the Anuv Jain source: the floor asked for 330x586 out of a
-    // 540-tall cell and pulled 46px of the panel above into both lower cells.
-    // A slightly tight head is a framing opinion; a seam is a bug.
-    ? Math.min(...Array.from({ length: slots }, (_, k) => {
-        const c = cellOf(k);
-        return Math.min(c.x1 - c.x0, (c.y1 - c.y0) * slotAspect);
-      }))
-    : Math.max(
-        faceWPx * MULTI_UP_MIN_CROP_FACE_WIDTHS,
-        toWidth(2 * Math.min(...halfAvail))
-      );
+    // This is the other half of the old bug. Sizing and placing the boxes from
+    // every detection in the clip mixed the wide shot's small heads with the
+    // close-ups' large ones, so an intercut source produced a box sized for
+    // neither. A close-up frame says nothing about where the speakers sit in the
+    // wide shot, so it does not get a vote.
+    const inKept = (i: number) =>
+      kept.some((r) => i >= r.from && i <= r.to) &&
+      ranges.some((t) => i * sampleDur >= t.start - sampleDur && i * sampleDur <= t.end + sampleDur);
+    const used = groups.filter((g) => inKept(g.i));
+    if (used.length === 0) return reject(`${slots}-up: no measured frame inside its own stretches`);
+    /** Every measurement of the person in slot k, over the frames we kept. */
+    const perSlot: FaceBox[][] = Array.from({ length: slots }, (_, k) => used.map((g) => g.faces[k]));
 
-  // ── Resolving them ──
-  //
-  // The cap outranks the sharpness floor. MULTI_UP_MAX_UPSCALE is a quality
-  // guard — it stops a bad measurement zooming to a nostril — while the cap is
-  // a correctness one, and on the panel master the two disagree by 10px
-  // (a 2.56x upscale instead of 2.5x, which lanczos will not show you). Letting
-  // the floor win there would put a sliver of the neighbour back in the band
-  // for nothing.
-  const floorW = Math.min(slotW / MULTI_UP_MAX_UPSCALE, capW);
-  let boxW = evenClamped(Math.max(Math.min(wantW, capW), floorW), 2, srcW);
-  let boxH = evenClamped(boxW / slotAspect, 2, srcH);
-  // A crop taller than the source has to give width back to keep the slot's
-  // shape — only a portrait slot (the 2x2 cell) can reach this.
-  if (boxW / slotAspect > srcH) {
-    boxH = evenClamped(srcH, 2, srcH);
-    boxW = evenClamped(boxH * slotAspect, 2, srcW);
-  }
+    // Median throughout, for the reason the camera path uses one: a single box
+    // latched onto a hand or a bystander must not move the framing.
+    const faceH = median(perSlot.map((boxes) => median(boxes.map((f) => f.h))));
+    if (!(faceH > 0)) return reject("measured face height was zero");
 
-  // A box that can hold the whole head gets headroom; one that cannot is aimed
-  // at the eyes and the mouth instead. See MULTI_UP_FACE_IN_BOX_TIGHT.
-  const faceInBox = boxH >= faceHPx ? MULTI_UP_FACE_IN_BOX : MULTI_UP_FACE_IN_BOX_TIGHT;
-  const place = (cx: number, cy: number, k: number) => {
-    // A grid window is clamped inside its OWN cell; every other layout is
-    // clamped inside the source, which is what the whole-frame bounds below
-    // amount to.
-    const c = isGrid ? cellOf(k) : { x0: 0, x1: srcW, y0: 0, y1: srcH };
-    return {
-      x: evenClamped(cx * srcW - boxW / 2, c.x0, Math.max(c.x0, c.x1 - boxW)),
-      y: evenClamped(cy * srcH - faceInBox * boxH, c.y0, Math.max(c.y0, c.y1 - boxH)),
-    };
+    // ── The crop is ALWAYS the slot's shape ───────────────────────────────────
+    //
+    // No pillarbox, no blurred backdrop: every crop is scaled straight into its
+    // slot and fills it edge to edge. That makes WIDTH the only free variable —
+    // height follows from it — and it makes the two competing pressures explicit:
+    //
+    //   want:  a width that puts the head at MULTI_UP_FACE_TARGET_H of the slot
+    //   cap:   a width that stops before the neighbour's face begins
+    //
+    // Wider than the cap and the band shows two people. Narrower than the want
+    // and the head is bigger than the slot, so the crop becomes a tight portrait
+    // of the face rather than a head-and-shoulders shot. On a source where the
+    // speakers sit far apart the cap never binds and the want is met exactly; on
+    // a tightly-packed panel layout the cap wins and the bands go close-up.
+    //
+    // ── The want ──
+    //
+    // A crop `boxW` wide scales into the slot by slotW/boxW, and because the crop
+    // is the slot's shape that is the same as slotH/boxH. So a head `faceHPx`
+    // tall lands at `faceHPx * slotAspect / boxW` of the slot's height, and
+    // solving that for the target gives the width below. For a wide two-shot
+    // (heads 0.115 of a 1080p frame) it comes out at 465x413 — the framing every
+    // two-speaker clip has shipped with, unchanged.
+    const targetH = MULTI_UP_FACE_TARGET_H[slots] ?? 0.30;
+    const faceHPx = faceH * srcH;
+    const wantW = (faceHPx * slotAspect) / targetH;
+
+    // ── The cap ──
+    //
+    // Measured on a 1280x720 three-panel podcast master (three portrait panels
+    // side by side, heads 0.51 of frame height, ~409px between adjacent heads):
+    // the want asked for a 1004px-wide crop out of 1280, so all three bands came
+    // out as the same shot of two men and the stack said nothing the source had
+    // not already said.
+    //
+    // So cap the width where the NEAREST NEIGHBOUR'S FACE starts. For each
+    // speaker, how far their window may reach from their own centre is whichever
+    // runs out first:
+    //
+    //   - the gap to a neighbour, less half that neighbour's face;
+    //   - the distance to the edge of the source.
+    //
+    // The frame edge belongs in that list because a window is clamped inside the
+    // source, and a clamped window is no longer centred on its speaker — it
+    // slides inward, straight into the neighbour it was sized to clear. Leaving
+    // it out sized the box off the middle speaker, whose neighbours are both far
+    // away, and the right-hand speaker's window then slid 97px left and took half
+    // the middle speaker's face with it.
+    //
+    // One box size positioned N times is what keeps every head at the same scale,
+    // so the cap is the tightest speaker's, not each speaker's own — and it has a
+    // floor, because a cap narrower than the face it is supposed to contain is
+    // not a crop of a person, it is a crop of a nose.
+    //
+    // ── …along whichever axis actually separates the speakers ──
+    //
+    // On a vertical rail the neighbour to clear is the one ABOVE and BELOW, and
+    // the horizontal distance to it is zero — feeding cx to the cap there asks
+    // the crop to stop before a face it is already centred on, which comes out
+    // negative and collapses the box onto the MIN_CROP_FACE_WIDTHS floor: a crop
+    // of a nose, three times over. So the room is measured along the separating
+    // axis, in that axis's units, and converted back to a width at the end. The
+    // crop is always the slot's shape, so a height cap IS a width cap.
+    const faceWPx = faceHPx / HEAD_ASPECT;
+    const cxs = perSlot.map((boxes) => median(boxes.map((f) => f.cx)));
+    const cys = perSlot.map((boxes) => median(boxes.map((f) => f.cy)));
+    const horizontal = axis === "x";
+    const isGrid = axis === "grid";
+
+    // ── Cells, for a 2x2 ──
+    //
+    // What a grid crop must stop at is not a neighbour's FACE but the panel
+    // SEAM: reach past it and the band shows a slice of the next camera's
+    // picture, which is the very thing a stacked frame exists to remove. (That
+    // artefact is visible on the pre-fix output of the Anuv Jain clip — the
+    // middle band carries the red wall and the black seam of the panel beside
+    // it.) The seam sits midway between the two column centres, and between the
+    // two row centres, read from the medians rather than assumed at the halfway
+    // line: a compositor is free to make its panels unequal, and this source's
+    // other layouts do exactly that.
+    //
+    // Row-major, matching `crops`: slot k is at column k % 2, row floor(k / 2).
+    // Midway between the two column centres is only an ESTIMATE of the seam, and
+    // it is biased by wherever the speakers happen to sit inside their panels: on
+    // the 20:14 shot the four faces put it at 0.48 of frame height against a true
+    // seam at 0.50, which leaves a 22px ribbon of the upper panel along the top of
+    // each lower cell. A compositor laying out four equal cameras splits evenly,
+    // so snap to the exact half whenever the estimate is already near it, and
+    // keep the estimate only for a grid that really is lopsided.
+    const snapSeam = (est: number) =>
+      Math.abs(est - 0.5) <= MULTI_UP_SEAM_SNAP ? 0.5 : est;
+    const xSeam = isGrid
+      ? snapSeam((median([cxs[0], cxs[2]]) + median([cxs[1], cxs[3]])) / 2) * srcW : 0;
+    const ySeam = isGrid
+      ? snapSeam((median([cys[0], cys[1]]) + median([cys[2], cys[3]])) / 2) * srcH : 0;
+    const cellOf = (k: number) => ({
+      x0: k % 2 === 0 ? 0 : xSeam,
+      x1: k % 2 === 0 ? xSeam : srcW,
+      y0: k < 2 ? 0 : ySeam,
+      y1: k < 2 ? ySeam : srcH,
+    });
+
+    // Extent of the source along the separating axis, the half-width of a face
+    // measured across that axis, and how a span along it becomes a crop width.
+    const span = horizontal ? srcW : srcH;
+    const halfFace = (horizontal ? faceWPx : faceHPx) / 2;
+    const toWidth = (alongAxis: number) => (horizontal ? alongAxis : alongAxis * slotAspect);
+    const centres = (horizontal ? cxs : cys).map((v) => v * span);
+    const halfAvail = centres.map((px, k) => {
+      const limits = [px, span - px];
+      if (k > 0) limits.push(px - centres[k - 1] - halfFace);
+      if (k < centres.length - 1) limits.push(centres[k + 1] - px - halfFace);
+      return Math.min(...limits);
+    });
+    const capW = isGrid
+      // The widest slot-shaped box that fits inside a cell, taken over the
+      // TIGHTEST cell so every head still comes out at one scale — the same
+      // "one box size positioned N times" rule the 1D cap follows.
+      //
+      // Deliberately WITHOUT the MULTI_UP_MIN_CROP_FACE_WIDTHS floor that the 1D
+      // cap carries. A cell edge is not a neighbour's face, it is the edge of
+      // another camera's picture, so crossing it does not merely crowd the band —
+      // it puts a strip of a different shot in it. That is the case the 1D cap's
+      // own note already settles ("Letting the floor win there would put a sliver
+      // of the neighbour back in the band for nothing"), and it binds here far
+      // more often: a 960x540 panel holding a head 0.27 of frame height cannot
+      // give a 9:16 crop 1.6 face-widths wide without overflowing, so the floor
+      // would win on ordinary footage rather than in a corner. Measured on the
+      // 20:14 shot of the Anuv Jain source: the floor asked for 330x586 out of a
+      // 540-tall cell and pulled 46px of the panel above into both lower cells.
+      // A slightly tight head is a framing opinion; a seam is a bug.
+      ? Math.min(...Array.from({ length: slots }, (_, k) => {
+          const c = cellOf(k);
+          return Math.min(c.x1 - c.x0, (c.y1 - c.y0) * slotAspect);
+        }))
+      : Math.max(
+          faceWPx * MULTI_UP_MIN_CROP_FACE_WIDTHS,
+          toWidth(2 * Math.min(...halfAvail))
+        );
+
+    // ── Resolving them ──
+    //
+    // The cap outranks the sharpness floor. MULTI_UP_MAX_UPSCALE is a quality
+    // guard — it stops a bad measurement zooming to a nostril — while the cap is
+    // a correctness one, and on the panel master the two disagree by 10px
+    // (a 2.56x upscale instead of 2.5x, which lanczos will not show you). Letting
+    // the floor win there would put a sliver of the neighbour back in the band
+    // for nothing.
+    const floorW = Math.min(slotW / MULTI_UP_MAX_UPSCALE, capW);
+    let boxW = evenClamped(Math.max(Math.min(wantW, capW), floorW), 2, srcW);
+    let boxH = evenClamped(boxW / slotAspect, 2, srcH);
+    // A crop taller than the source has to give width back to keep the slot's
+    // shape — only a portrait slot (the 2x2 cell) can reach this.
+    if (boxW / slotAspect > srcH) {
+      boxH = evenClamped(srcH, 2, srcH);
+      boxW = evenClamped(boxH * slotAspect, 2, srcW);
+    }
+
+    // A box that can hold the whole head gets headroom; one that cannot is aimed
+    // at the eyes and the mouth instead. See MULTI_UP_FACE_IN_BOX_TIGHT.
+    const faceInBox = boxH >= faceHPx ? MULTI_UP_FACE_IN_BOX : MULTI_UP_FACE_IN_BOX_TIGHT;
+    const place = (cx: number, cy: number, k: number) => {
+      // A grid window is clamped inside its OWN cell; every other layout is
+      // clamped inside the source, which is what the whole-frame bounds below
+      // amount to.
+      const c = isGrid ? cellOf(k) : { x0: 0, x1: srcW, y0: 0, y1: srcH };
+      return {
+        x: evenClamped(cx * srcW - boxW / 2, c.x0, Math.max(c.x0, c.x1 - boxW)),
+        y: evenClamped(cy * srcH - faceInBox * boxH, c.y0, Math.max(c.y0, c.y1 - boxH)),
+      };
   };
   // ── Squaring up a column ──────────────────────────────────────────────────
   //
@@ -2266,11 +2441,71 @@ export function planMultiUp(
     `[facetrack] ${slots}-shot on ${axis} (${cols}×${rows} grid, ${slotW}×${slotH} slots, ` +
     `${boxW}×${boxH} crops, head ${((faceHPx / boxH) * 100).toFixed(0)}% of a slot) in ` +
     `${ranges.length} stretch(es) totalling ${stackedSecs.toFixed(1)}s ` +
-    `of ${clipDur.toFixed(1)}s (${(coverage * 100).toFixed(0)}%${whole ? ", whole clip" : ""}): ` +
+    `of ${clipDur.toFixed(1)}s (${((stackedSecs / Math.max(clipDur, 1e-9)) * 100).toFixed(0)}%): ` +
     ranges.map((r) => `${r.start.toFixed(1)}–${r.end.toFixed(1)}s`).join(", ")
   );
 
-  return { slots, axis, boxW, boxH, crops, ranges, coverage, whole };
+  return { slots, axis, boxW, boxH, crops, ranges: ranges.map((r) => ({ ...r, slots })) };
+  };
+
+  console.log(`[facetrack] Group sizes: ${summary} -> ${chosen.size} slot(s) separated on ${chosen.axis}.`);
+
+  const dominant = buildLayout(chosen, chosen.ranges);
+  if (!dominant) return null;
+
+  // ── The other shapes this clip cuts to ────────────────────────────────────
+  //
+  // A podcast master is not one shot. The source that prompted this cuts
+  // between a two-shot of the guests and a wide that also holds the host, so
+  // "how many people is this clip?" has two right answers and the clip wants
+  // both: 50/50 while two are on screen, three equal bands while three are.
+  // Picking one count for the whole clip left ten seconds of a clean two-shot
+  // to the single-speaker camera, which is exactly the shot the stack exists
+  // to replace.
+  //
+  // The dominant layout still owns its stretches OUTRIGHT, and the asymmetry is
+  // deliberate. MoveNet drops a person who leans out of frame or turns away, so
+  // a genuine three-shot reports two heads on a good fraction of its samples —
+  // that is why the larger group wins the clip in the first place. Those
+  // two-head samples are misses, not a two-shot, and stacking them would drop
+  // somebody who is on screen. Subtracting the dominant layout's ranges removes
+  // them by construction: they sit inside a stretch it already owns.
+  //
+  // What survives is a stretch where the dominant group was NOT seen for long
+  // enough to bridge — a real cut to a different shot — and it has to clear the
+  // same two bars any stack does, a run of MULTI_UP_MIN_RUN_S and a total of
+  // MULTI_UP_MIN_TOTAL_S, before it is worth cutting to.
+  const layouts: MultiUpLayout[] = [dominant];
+  if (!chosen.whole) {
+    // Best by the time it would actually add, not by group size: a three-shot
+    // glimpsed for two seconds must not outrank the ten seconds of two-shot the
+    // clip is really made of, which sorting by size would do.
+    const runnerUp = viable
+      .filter((c) => c !== chosen && c.size !== chosen.size)
+      .map((c) => ({ cand: c, free: subtractRanges(c.ranges, dominant.ranges) }))
+      .filter((c) => totalSecs(c.free) >= MULTI_UP_MIN_TOTAL_S)
+      .sort((a, b) => totalSecs(b.free) - totalSecs(a.free))[0];
+    // One extra shape, not every shape that cleared the bar. Two is what a real
+    // master gives you — a two-shot and the wide that adds the host — and each
+    // one costs its own crops, scales and overlay in a graph that already has a
+    // camera in it. A clip that genuinely changes shape three times in thirty
+    // seconds is a montage, and the single-speaker camera is the better answer
+    // for the third shape than a third layout is.
+    const layout = runnerUp ? buildLayout(runnerUp.cand, runnerUp.free) : null;
+    if (layout) layouts.push(layout);
+  }
+
+  const stackedTotal = totalSecs(takenRanges(layouts));
+  const coverage = clipDur > 0 ? Math.min(1, stackedTotal / clipDur) : 0;
+  if (layouts.length > 1) {
+    console.log(
+      `[facetrack] Clip changes shape: ` +
+      layouts.map((l) => `${l.slots}-up ${totalSecs(l.ranges).toFixed(1)}s`).join(" + ") +
+      ` = ${(coverage * 100).toFixed(0)}% of ${clipDur.toFixed(1)}s.`
+    );
+  }
+
+  return { layouts, slots: dominant.slots, coverage, whole: chosen.whole };
 }
 
 /**
@@ -2318,49 +2553,75 @@ export function multiUpFilterComplex(
   hasAudio: boolean,
   baseParts?: string[]
 ): string {
-  const { cols, rows, slotW, slotH } = slotGeometry(plan.slots);
-  const n = plan.crops.length;
-  const composited = baseParts !== undefined && plan.ranges.length > 0;
+  const layouts = plan.layouts.filter((l) => l.ranges.length > 0);
+  const composited = baseParts !== undefined && layouts.length > 0;
+  if (layouts.length === 0) throw new Error("multiUpFilterComplex: plan has no layouts");
+  if (!composited && layouts.length > 1) {
+    // A whole-clip stack has nothing to cut to by definition, so a second
+    // layout can only reach here through a caller that dropped the base chain.
+    throw new Error("multiUpFilterComplex: several layouts need a base to switch between");
+  }
+
+  // Every slot of every layout takes its own copy of the source, plus one for
+  // the base picture the stacks are switched on top of. They all read the same
+  // input at the same instant — a stack is a crop of the frame that is already
+  // on screen — so one `split` feeds the lot.
+  const slotCount = layouts.reduce((a, l) => a + l.crops.length, 0);
+  const slotLabels: string[] = [];
+  layouts.forEach((l, li) => l.crops.forEach((_, i) => slotLabels.push(`[s${li}_${i}]`)));
 
   const parts = composited
-    ? [`[0:v]setpts=PTS-STARTPTS,split=${n + 1}[base]${plan.crops.map((_, i) => `[s${i}]`).join("")}`, ...baseParts!]
-    : [`[0:v]setpts=PTS-STARTPTS,split=${n}${plan.crops.map((_, i) => `[s${i}]`).join("")}`];
+    ? [`[0:v]setpts=PTS-STARTPTS,split=${slotCount + 1}[base]${slotLabels.join("")}`, ...baseParts!]
+    : [`[0:v]setpts=PTS-STARTPTS,split=${slotCount}${slotLabels.join("")}`];
 
-  // setsar=1 after each scale: the crops are not square-pixel by construction,
-  // and hstack/vstack refuse to join inputs whose sample aspect ratios disagree.
-  // One plain crop-and-scale per slot — the crop is already the slot's shape,
-  // so it fills it exactly and there is nothing to pad, letterbox or blur.
-  plan.crops.forEach((c, i) => {
-    parts.push(
-      `[s${i}]crop=${plan.boxW}:${plan.boxH}:${c.x}:${c.y},` +
-        `scale=${slotW}:${slotH}:flags=lanczos,setsar=1[c${i}]`
-    );
+  layouts.forEach((layout, li) => {
+    const { cols, rows, slotW, slotH } = slotGeometry(layout.slots);
+
+    // setsar=1 after each scale: the crops are not square-pixel by construction,
+    // and hstack/vstack refuse to join inputs whose sample aspect ratios disagree.
+    // One plain crop-and-scale per slot — the crop is already the slot's shape,
+    // so it fills it exactly and there is nothing to pad, letterbox or blur.
+    layout.crops.forEach((c, i) => {
+      parts.push(
+        `[s${li}_${i}]crop=${layout.boxW}:${layout.boxH}:${c.x}:${c.y},` +
+          `scale=${slotW}:${slotH}:flags=lanczos,setsar=1[c${li}_${i}]`
+      );
+    });
+
+    // Rows first, then the rows on top of each other. A 1-column grid skips the
+    // hstack and vstacks the cells directly, which is byte-identical to the graph
+    // the two-speaker stack has always emitted.
+    const stackOut = composited ? `[stack${li}]` : "[outv]";
+    const rowLabels: string[] = [];
+    for (let r = 0; r < rows; r++) {
+      const cells = Array.from({ length: cols }, (_, c) => `[c${li}_${r * cols + c}]`).join("");
+      if (cols === 1) { rowLabels.push(cells); continue; }
+      parts.push(`${cells}hstack=inputs=${cols},setsar=1[r${li}_${r}]`);
+      rowLabels.push(`[r${li}_${r}]`);
+    }
+    if (rows === 1) {
+      // Cannot happen with MULTI_UP_MIN_SLOTS = 2, but a single-row grid would
+      // otherwise emit a vstack with one input, which ffmpeg rejects.
+      parts.push(`${rowLabels[0]}null${stackOut}`);
+    } else {
+      parts.push(
+        `${rowLabels.join("")}vstack=inputs=${rows}` +
+        (composited ? `,setsar=1[stack${li}]` : "[outv]")
+      );
+    }
   });
 
-  // Rows first, then the rows on top of each other. A 1-column grid skips the
-  // hstack and vstacks the cells directly, which is byte-identical to the graph
-  // the two-speaker stack has always emitted.
-  const stackOut = composited ? "[stack]" : "[outv]";
-  const rowLabels: string[] = [];
-  for (let r = 0; r < rows; r++) {
-    const cells = Array.from({ length: cols }, (_, c) => `[c${r * cols + c}]`).join("");
-    if (cols === 1) { rowLabels.push(cells); continue; }
-    parts.push(`${cells}hstack=inputs=${cols},setsar=1[r${r}]`);
-    rowLabels.push(`[r${r}]`);
-  }
-  if (rows === 1) {
-    // Cannot happen with MULTI_UP_MIN_SLOTS = 2, but a single-row grid would
-    // otherwise emit a vstack with one input, which ffmpeg rejects.
-    parts.push(`${rowLabels[0]}null${stackOut}`);
-  } else {
-    parts.push(`${rowLabels.join("")}vstack=inputs=${rows}${composited ? ",setsar=1[stack]" : "[outv]"}`);
-  }
-
   if (composited) {
-    // The stack covers the base exactly — same size, same origin — so `overlay`
+    // Each stack covers the base exactly — same size, same origin — so `overlay`
     // here is a switch, not a composite. `enable` is what makes it one: outside
-    // the ranges the base passes through untouched.
-    parts.push(`[single][stack]overlay=0:0:enable='${enableExpr(plan.ranges)}'[outv]`);
+    // its own ranges a stack passes nothing through, and the ranges are disjoint
+    // across layouts, so at most one of them is ever on. They chain, each
+    // overlaying whatever the one before it produced.
+    layouts.forEach((layout, li) => {
+      const from = li === 0 ? "[single]" : `[ov${li - 1}]`;
+      const to = li === layouts.length - 1 ? "[outv]" : `[ov${li}]`;
+      parts.push(`${from}[stack${li}]overlay=0:0:enable='${enableExpr(layout.ranges)}'${to}`);
+    });
   }
 
   if (hasAudio) parts.push(`[0:a]asetpts=PTS-STARTPTS[outa]`);
@@ -2411,6 +2672,8 @@ export async function detectFacesCropData(
   // loaded box — none of that means the clip is unusable, it just means we fall
   // back to the single-speaker camera, which is what every clip did before.
   let multiUp: MultiUpPlan | null = null;
+  /** Set only when the probe could not RUN — see isProbeUnavailable. */
+  let multiUpUnavailable: string | undefined;
   try {
     const { perFrame, probeFps } = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH);
     multiUp = planMultiUp(perFrame, srcW, srcH, probeFps, clipDur);
@@ -2444,27 +2707,45 @@ export async function detectFacesCropData(
       multiUp = betterPlan(multiUp, slicedPlan);
     }
   } catch (err) {
-    console.warn(
-      `[facetrack] Speaker probe failed (${err instanceof Error ? err.message : String(err)}) — ` +
-      `continuing with the single-speaker camera.`
-    );
+    const msg = err instanceof Error ? err.message.split("\n")[0] : String(err);
+    if (isProbeUnavailable(err)) {
+      // Not this clip's problem, and not recoverable by retrying it: the probe
+      // cannot run in this process, so EVERY clip from here on is going to come
+      // out single-speaker. Said at error level, and said in the words the
+      // person reading the log needs, because the last time this happened it
+      // read as an ordinary warning for three days.
+      multiUpUnavailable = msg;
+      console.error(
+        `[facetrack] MULTI-UP UNAVAILABLE — the speaker probe cannot load in this ` +
+        `environment, so NO clip will be stacked until it is fixed: ${msg}. ` +
+        `Check that ${POSE_DETECTOR_PACKAGES.join(", ")} are all installed here.`
+      );
+    } else {
+      console.warn(
+        `[facetrack] Speaker probe failed (${msg}) — ` +
+        `continuing with the single-speaker camera.`
+      );
+    }
   }
 
   if (multiUp?.whole) {
-    const grid = slotGeometry(multiUp.slots);
+    // `whole` is only ever set on a one-layout plan — a stack that never cuts
+    // away has nothing to cut to — so this path still reads the single layout.
+    const only = multiUp.layouts[0];
+    const grid = slotGeometry(only.slots);
     console.log(
-      `[facetrack] ${multiUp.slots} speakers on screen for the whole clip — ` +
-      `stacking ${grid.cols}×${grid.rows}: ${multiUp.boxW}×${multiUp.boxH} at ` +
-      multiUp.crops.map((c) => `(${c.x},${c.y})`).join(" / ") + "."
+      `[facetrack] ${only.slots} speakers on screen for the whole clip — ` +
+      `stacking ${grid.cols}×${grid.rows}: ${only.boxW}×${only.boxH} at ` +
+      only.crops.map((c) => `(${c.x},${c.y})`).join(" / ") + "."
     );
     return {
       srcW, srcH, fps, hasAudio,
       clipStart: start, clipEnd: end,
-      cropW: multiUp.boxW, cropH: multiUp.boxH, rawCropW,
+      cropW: only.boxW, cropH: only.boxH, rawCropW,
       isBlurBg: false,
       speakerLayout: "split",
-      speakerSlots: multiUp.slots,
-      stackedRanges: [{ start: 0, end: clipDur }],
+      speakerSlots: only.slots,
+      stackedRanges: [{ start: 0, end: clipDur, slots: only.slots }],
       filterComplex: multiUpFilterComplex(multiUp, hasAudio),
       // Deliberately omitted. faceFocusY answers "which slice of this clip
       // holds the face" — a question with no answer for a stack, where every
@@ -2567,7 +2848,7 @@ export async function detectFacesCropData(
       isBlurBg: true,
       filterComplex: filterParts,
       faceFocusY,
-      ...multiUpFields(multiUp),
+      ...multiUpFields(multiUp, multiUpUnavailable),
     };
   }
 
@@ -2607,7 +2888,7 @@ export async function detectFacesCropData(
         }
       : {}),
     faceFocusY,
-    ...multiUpFields(multiUp),
+    ...multiUpFields(multiUp, multiUpUnavailable),
   };
 }
 
@@ -2620,10 +2901,20 @@ export async function detectFacesCropData(
  * that is gone — or to a three-band seam when it is now a two-band stack.
  */
 function multiUpFields(
-  plan: MultiUpPlan | null
-): Pick<CropResult, "speakerLayout" | "speakerSlots" | "stackedRanges"> {
-  if (!plan) return { speakerLayout: "single", speakerSlots: undefined, stackedRanges: [] };
-  return { speakerLayout: "split", speakerSlots: plan.slots, stackedRanges: plan.ranges };
+  plan: MultiUpPlan | null,
+  multiUpError?: string
+): Pick<CropResult, "speakerLayout" | "speakerSlots" | "stackedRanges" | "multiUpError"> {
+  if (!plan) return { speakerLayout: "single", speakerSlots: undefined, stackedRanges: [], multiUpError };
+  // Flattened across layouts and sorted, because the composition walks them in
+  // clip order and each one carries the slot count that decides where its seam
+  // is. `speakerSlots` stays the dominant layout's, for consumers that read one
+  // number and for rows written before a clip could change shape.
+  return {
+    speakerLayout: "split",
+    speakerSlots: plan.slots,
+    stackedRanges: takenRanges(plan.layouts),
+    multiUpError,
+  };
 }
 
 /**
@@ -2872,6 +3163,7 @@ export async function encodeWithFallback(
       speakerLayout: result.speakerLayout ?? "single",
       speakerSlots: result.speakerLayout === "split" ? result.speakerSlots ?? 2 : undefined,
       stackedRanges: result.speakerLayout === "split" ? result.stackedRanges ?? [] : [],
+      multiUpError: result.multiUpError,
     };
   }
 
@@ -2881,7 +3173,13 @@ export async function encodeWithFallback(
     () => encodeWithCropData(inputPath, outputPath, fallback),
     { attempts: PHASE_ATTEMPTS, baseDelayMs: 1_500, label: `facetrack encode-fallback ${label}`, shouldRetry: notBudget }
   );
-  return { tracked: false, speakerLayout: "single", speakerSlots: undefined, stackedRanges: [] };
+  return {
+    tracked: false,
+    speakerLayout: "single",
+    speakerSlots: undefined,
+    stackedRanges: [],
+    multiUpError: result.multiUpError,
+  };
 }
 
 /**
@@ -2894,6 +3192,12 @@ export interface SpeakerLayoutResult {
   /** 2, 3 or 4 on a "split" clip; undefined on a "single" one. */
   speakerSlots?: number;
   stackedRanges: TimeRange[];
+  /**
+   * Set only when the speaker probe could not RUN — see `CropResult.multiUpError`.
+   * A "single" clip with this set is not a clip with one speaker in it; it is a
+   * clip nobody looked at.
+   */
+  multiUpError?: string;
 }
 
 // ─── Combined single-clip API (wraps detect + encode) ────────────────────────
@@ -2906,13 +3210,13 @@ export async function cropVideoSegment(
   label = "clip"
 ): Promise<SpeakerLayoutResult & { faceFocusY?: number; tracked: boolean }> {
   const { result } = await detectCropDataResilient(inputPath, clipStart, clipEnd, label);
-  const { tracked, speakerLayout, speakerSlots, stackedRanges } =
+  const { tracked, speakerLayout, speakerSlots, stackedRanges, multiUpError } =
     await encodeWithFallback(inputPath, outputPath, result, label);
   // faceFocusY survives an encode fallback: the crop is horizontal-only in both
   // the tracked and the static plan (cropH is always the full source height), so
   // a vertical position measured during detection is still where the face is in
   // the output. It is undefined precisely when detection never measured it.
-  return { faceFocusY: result.faceFocusY, tracked, speakerLayout, speakerSlots, stackedRanges };
+  return { faceFocusY: result.faceFocusY, tracked, speakerLayout, speakerSlots, stackedRanges, multiUpError };
 }
 
 /**
@@ -2985,7 +3289,7 @@ export async function cropShortWithFaceTracking(
       );
     }
 
-    const { faceFocusY, tracked, speakerLayout, speakerSlots, stackedRanges } =
+    const { faceFocusY, tracked, speakerLayout, speakerSlots, stackedRanges, multiUpError } =
       await cropVideoSegment(inputPath, outputPath, startTime, endTime, label);
 
     // Streamed from disk rather than read into a Buffer: an encoded clip is
@@ -2996,7 +3300,7 @@ export async function cropShortWithFaceTracking(
       { attempts: 3, baseDelayMs: 2_000, label: `facetrack upload ${label}` }
     );
     console.log(`[facetrack] Uploaded cropped clip to R2: ${r2Url}${tracked ? "" : " (centre crop — detection unavailable)"}`);
-    return { url: r2Url, faceFocusY, tracked, speakerLayout, speakerSlots, stackedRanges };
+    return { url: r2Url, faceFocusY, tracked, speakerLayout, speakerSlots, stackedRanges, multiUpError };
   } finally {
     if (ownedInput) {
       try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}

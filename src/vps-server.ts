@@ -17,6 +17,7 @@
  */
 
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -296,6 +297,8 @@ interface FacetrackJob {
   speakerLayout?: string;
   speakerSlots?: number | null;
   stackedRanges?: { start: number; end: number }[];
+  /** Set when the multi-speaker probe could not RUN here — see /health's facetrack.pose. */
+  multiUpError?: string;
   createdAt: number;
   completedAt?: number;
 }
@@ -309,6 +312,50 @@ const facetrackPool = new FacetrackPool({
   isRenderBusy: () => runningJobs > 0,
   tmpDir,
 });
+
+/**
+ * Can a worker load the multi-speaker detector's package at all?
+ *
+ * Checked ONCE at boot, in a throwaway child process rather than here, for the
+ * same reason the crops themselves run in workers: `@tensorflow-models/*` pulls
+ * the TensorFlow native addon, and this process serves the app's HTTP requests.
+ * The child answers the only question that matters — does `require` succeed —
+ * which is precisely what failed from 2026-09-20: pose-detection's entry point
+ * requires its `@mediapipe/pose` PEER, `npm install --legacy-peer-deps` does not
+ * install peers, and every clip since silently came back single-speaker while
+ * BlazeFace (a different package, already installed) kept the single-speaker
+ * camera working perfectly. Nothing in /health could have told you.
+ *
+ * Deliberately NOT fatal: a box that cannot stack can still render, still crop
+ * and still follow a speaker. It just has to say so out loud.
+ */
+let poseHealth: { ok: boolean; error?: string } = { ok: false, error: "not checked yet" };
+
+const checkPoseHealth = () => {
+  const probe = spawn(
+    process.execPath,
+    ["-e", "require('@tensorflow-models/pose-detection')"],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  let stderr = "";
+  probe.stderr?.on("data", (c: Buffer) => { stderr += c.toString(); });
+  probe.on("error", (err) => { poseHealth = { ok: false, error: err.message }; });
+  probe.on("exit", (code) => {
+    if (code === 0) {
+      poseHealth = { ok: true };
+      console.log("[facetrack] Multi-speaker probe available (pose-detection loads).");
+      return;
+    }
+    const first = stderr.split("\n").map((l) => l.trim()).find((l) => /Error|Cannot find/.test(l))
+      ?? `pose-detection failed to load (exit ${code ?? "null"})`;
+    poseHealth = { ok: false, error: first };
+    console.error(
+      `[facetrack] MULTI-UP UNAVAILABLE — @tensorflow-models/pose-detection will not load, ` +
+      `so NO clip will be stacked into 2/3/4 speakers on this box: ${first}`,
+    );
+  });
+};
+checkPoseHealth();
 
 // ── Journal (crash recovery) ──────────────────────────────────────────────────
 
@@ -618,6 +665,15 @@ app.get("/health", (_req, res) => {
       // src/facetrack/r2.ts. This makes the mistake visible from /health.
       bucket: process.env.FACETRACK_R2_BUCKET || r2Bucket,
       publicUrl: (process.env.FACETRACK_R2_PUBLIC_URL || r2PublicUrl).replace(/\/$/, ""),
+      // Whether the MULTI-SPEAKER probe can run, which is a separate question
+      // from whether face tracking works: BlazeFace (the single-speaker camera)
+      // and MoveNet (the 2/3/4-up stack) are different models with different
+      // dependencies, so the box can crop every clip perfectly while stacking
+      // none of them. That is exactly what it did from 2026-09-20, when
+      // `npm install --legacy-peer-deps` left out pose-detection's
+      // `@mediapipe/pose` peer and 912 clips came out single-speaker in
+      // silence. Anything but "ok" here means no clip is being stacked.
+      pose: poseHealth,
     },
   });
 });
@@ -734,6 +790,7 @@ const toFacetrackPayload = (job: FacetrackJob) => ({
         speakerLayout: job.speakerLayout,
         speakerSlots: job.speakerSlots ?? null,
         stackedRanges: job.stackedRanges ?? [],
+        ...(job.multiUpError ? { multiUpError: job.multiUpError } : {}),
       }
     : {}),
 });
@@ -797,6 +854,7 @@ app.post("/facetrack", requireAuth, (req, res) => {
         job.speakerLayout = result.speakerLayout;
         job.speakerSlots = result.speakerSlots ?? null;
         job.stackedRanges = result.stackedRanges ?? [];
+        job.multiUpError = result.multiUpError;
         console.log(
           `[facetrack] ${job.facetrackJobId} → ${result.url}` +
             (result.tracked ? "" : " (centre crop — detection unavailable)"),

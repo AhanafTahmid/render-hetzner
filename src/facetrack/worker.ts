@@ -47,6 +47,12 @@ export interface FacetrackWorkerResult {
   speakerLayout?: string;
   speakerSlots?: number | null;
   stackedRanges?: { start: number; end: number }[];
+  /**
+   * Set when the multi-speaker probe could not RUN in this worker, so
+   * `speakerLayout: "single"` means "nobody looked" rather than "one speaker".
+   * Reported so the failure reaches the app instead of dying in a container log.
+   */
+  multiUpError?: string;
   detectMs?: number;
   totalMs?: number;
 }
@@ -92,6 +98,7 @@ for await (const line of rl) {
       speakerLayout: out.speakerLayout,
       speakerSlots: out.speakerSlots ?? null,
       stackedRanges: out.stackedRanges,
+      multiUpError: out.multiUpError,
       totalMs: Date.now() - t0,
     });
   } catch (err) {

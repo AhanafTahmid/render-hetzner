@@ -622,9 +622,17 @@ export const ShortComposition = ({
   //
   // `stackedRanges` is the ONLY thing that raises the captions; `speakerLayout`
   // just confirms the clip is the kind that can have them. A clip with no
-  // ranges gets ordinary bottom captions — see `withinRanges` for why the
+  // ranges gets ordinary bottom captions — see `activeRange` for why the
   // unknown case resolves that way rather than the other.
-  const stackedSpeakers = speakerLayout === "split" && withinRanges(stackedRanges, clipTime);
+  //
+  // The range, not just a yes/no, because one clip can cut between a two-shot
+  // and a three-shot: the source does it, so the stack follows it, and 50/50
+  // and three-equal-bands do not seam in the same place. The range says which
+  // shape is on screen right now; `speakerSlots` is the fallback for a range
+  // written before a clip could change shape mid-clip.
+  const stackedRange = speakerLayout === "split" ? activeRange(stackedRanges, clipTime) : null;
+  const stackedSpeakers = stackedRange !== null;
+  const activeSlots = Number(stackedRange?.slots) || Number(speakerSlots) || 2;
 
   // ── Where the hook title goes ──────────────────────────────────────────────
   //
@@ -638,7 +646,7 @@ export const ShortComposition = ({
   // frame is still either a picture that can carry text or a face the hook was
   // always going to sit above.
   const hasHook = typeof hookText === "string" && hookText.trim() !== "";
-  const hookSeam = hasHook && stackedSpeakers ? hookSeamY(Number(speakerSlots) || 2) : null;
+  const hookSeam = hasHook && stackedSpeakers ? hookSeamY(activeSlots) : null;
   // Is the headline actually on screen at THIS frame? A hook is usually set to
   // 3 seconds, so for most of the clip the answer is no and the captions are
   // free to take the seam back.
@@ -650,7 +658,7 @@ export const ShortComposition = ({
   // cutaway always seams at the middle, and it wins when both are on screen:
   // its own half-frame geometry is what the captions have to clear.
   const rawCaptionSeam =
-    activeSplit !== null ? true : stackedSpeakers ? stackSeamY(Number(speakerSlots) || 2) : false;
+    activeSplit !== null ? true : stackedSpeakers ? stackSeamY(activeSlots) : false;
 
   // Two bands (and a 2x2 of four) have exactly ONE seam, and both the hook and
   // the captions want it. The hook wins for as long as it is up — it is the
@@ -791,10 +799,10 @@ function clipTimeAt(
  * never wrong. A clip that carries ranges still gets the seam for precisely the
  * frames that are stacked.
  */
-function withinRanges(
-  ranges: { start: number; end: number }[] | undefined | null,
+function activeRange(
+  ranges: { start: number; end: number; slots?: number }[] | undefined | null,
   t: number
-): boolean {
-  if (!Array.isArray(ranges) || ranges.length === 0) return false;
-  return ranges.some((r) => t >= Number(r?.start) && t <= Number(r?.end));
+): { start: number; end: number; slots?: number } | null {
+  if (!Array.isArray(ranges) || ranges.length === 0) return null;
+  return ranges.find((r) => t >= Number(r?.start) && t <= Number(r?.end)) ?? null;
 }
