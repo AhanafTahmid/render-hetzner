@@ -855,9 +855,21 @@ app.post("/facetrack", requireAuth, (req, res) => {
         job.speakerSlots = result.speakerSlots ?? null;
         job.stackedRanges = result.stackedRanges ?? [];
         job.multiUpError = result.multiUpError;
+        // The layout is in the line on purpose. It is the one number that says
+        // whether the multi-speaker stack is doing anything at all, and when it
+        // silently stopped there was no way to tell from this box without
+        // reading the app's database.
+        const layout =
+          result.speakerLayout === "split"
+            ? `split ${result.speakerSlots ?? "?"}-up over ` +
+              (result.stackedRanges ?? [])
+                .map((r) => `${r.start.toFixed(1)}-${r.end.toFixed(1)}s`)
+                .join(",")
+            : "single";
         console.log(
-          `[facetrack] ${job.facetrackJobId} → ${result.url}` +
-            (result.tracked ? "" : " (centre crop — detection unavailable)"),
+          `[facetrack] ${job.facetrackJobId} → ${result.url} [${layout}]` +
+            (result.tracked ? "" : " (centre crop — detection unavailable)") +
+            (result.multiUpError ? ` (probe unavailable: ${result.multiUpError})` : ""),
         );
       } else {
         job.status = "failed";

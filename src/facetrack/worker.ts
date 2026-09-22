@@ -57,6 +57,31 @@ export interface FacetrackWorkerResult {
   totalMs?: number;
 }
 
+/**
+ * Everything the pipeline prints goes to STDERR, because stdout is the wire.
+ *
+ * The pool reads this process's stdout line by line and keeps only the lines
+ * starting with `RESULT `; everything else it drops on the floor. So every
+ * `console.log` in the vendored pipeline — "Group sizes: 3-up×9=8.0s, 2-up…",
+ * "3-shot on x … 8.0–16.0s", "Not stacking (single-speaker camera): <reason>",
+ * the whole record of WHY a clip came out the way it did — vanished the day
+ * face tracking moved to this box. `console.warn` and `console.error` write to
+ * stderr, which is `inherit`ed, which is the only reason the missing
+ * `@mediapipe/pose` left any trace at all.
+ *
+ * Redirecting rather than changing the call sites: the pipeline is generated
+ * from the app's lib/facetrack.ts, where `console.log` is correct — there it
+ * runs in a process whose stdout nobody is parsing. This is the one place that
+ * knows stdout means something else.
+ *
+ * It also protects the protocol. A stray `console.log` that happened to start
+ * with "RESULT " could be parsed as a job result; now nothing but `send` can
+ * reach stdout at all.
+ */
+for (const level of ["log", "info", "debug"] as const) {
+  console[level] = (...args: unknown[]) => console.error(...args);
+}
+
 const send = (r: FacetrackWorkerResult) => process.stdout.write("RESULT " + JSON.stringify(r) + "\n");
 
 const rl = readline.createInterface({ input: process.stdin });
