@@ -54,41 +54,66 @@ const WATERMARK_POSITIONS: WatermarkPosition[] = [
 function getWatermarkStyle(pos: WatermarkPosition): React.CSSProperties {
   const base: React.CSSProperties = { position: "absolute", pointerEvents: "none", display: "flex", alignItems: "center" };
   switch (pos) {
-    case "top-right":    return { ...base, top: 40, right: 24 };
-    case "top-left":     return { ...base, top: 40, left: 24 };
-    case "bottom-right": return { ...base, bottom: 180, right: 24 };
-    case "bottom-left":  return { ...base, bottom: 180, left: 24 };
-    case "top-center":   return { ...base, top: 40, left: "50%", transform: "translateX(-50%)" };
-    default:             return { ...base, top: 40, right: 24 };
+    case "top-right":    return { ...base, top: 56, right: 36 };
+    case "top-left":     return { ...base, top: 56, left: 36 };
+    case "bottom-right": return { ...base, bottom: 200, right: 36 };
+    case "bottom-left":  return { ...base, bottom: 200, left: 36 };
+    case "top-center":   return { ...base, top: 56, left: "50%", transform: "translateX(-50%)" };
+    default:             return { ...base, top: 56, right: 36 };
   }
 }
 
+/**
+ * The free-plan watermark.
+ *
+ * Sized against the 1080-wide composition, not against a laptop preview: at the
+ * old 28px it was 2.6% of the frame width and vanished on a phone, which is the
+ * only screen that matters for a short. 48px on a dark pill reads at thumbnail
+ * size and survives bright footage, and the pill is what makes it legible over
+ * white backgrounds where plain white-on-white text used to disappear entirely.
+ *
+ * It still hops between five positions every 3 seconds and fades across the
+ * hand-off, so it cannot be cropped out and does not sit on top of the captions.
+ */
 function WatermarkOverlay({ frame, totalFrames, fps }: { frame: number; totalFrames: number; fps: number }) {
   const segDur = 3 * fps;
   const posIdx = Math.floor(frame / segDur) % WATERMARK_POSITIONS.length;
   const pos = WATERMARK_POSITIONS[posIdx];
   const frameInSeg = frame % segDur;
   const fadeDur = Math.round(fps * 0.3);
-  let opacity = 0.55;
+  const PEAK = 0.92;
+  const FLOOR = 0.55;
+  let opacity = PEAK;
   if (frameInSeg < fadeDur) {
-    opacity = interpolate(frameInSeg, [0, fadeDur], [0.2, 0.55], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+    opacity = interpolate(frameInSeg, [0, fadeDur], [FLOOR, PEAK], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   } else if (frameInSeg > segDur - fadeDur) {
-    opacity = interpolate(frameInSeg, [segDur - fadeDur, segDur], [0.55, 0.2], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+    opacity = interpolate(frameInSeg, [segDur - fadeDur, segDur], [PEAK, FLOOR], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   }
   return (
-    <div style={getWatermarkStyle(pos)}>
-      <span style={{
-        color: `rgba(255,255,255,${opacity})`,
-        fontSize: 28,
-        fontWeight: 700,
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        letterSpacing: 1,
-        textShadow: "0 2px 8px rgba(0,0,0,0.7), 0 0 20px rgba(0,0,0,0.5)",
-        userSelect: "none",
-        whiteSpace: "nowrap",
+    <div style={{ ...getWatermarkStyle(pos), opacity }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        padding: "14px 26px",
+        borderRadius: 999,
+        background: "rgba(0,0,0,0.42)",
+        border: "2px solid rgba(255,255,255,0.28)",
+        boxShadow: "0 6px 24px rgba(0,0,0,0.45)",
       }}>
-        shortshero.com
-      </span>
+        <span style={{
+          color: "#ffffff",
+          fontSize: 48,
+          fontWeight: 800,
+          fontFamily: "system-ui, -apple-system, sans-serif",
+          letterSpacing: 0.5,
+          lineHeight: 1,
+          textShadow: "0 2px 10px rgba(0,0,0,0.85), 0 0 24px rgba(0,0,0,0.6)",
+          userSelect: "none",
+          whiteSpace: "nowrap",
+        }}>
+          shortshero.com
+        </span>
+      </div>
     </div>
   );
 }
