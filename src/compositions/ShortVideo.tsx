@@ -45,10 +45,10 @@ export interface CaptionStyle extends CaptionRenderStyle {
 }
 
 // ── Watermark overlay (shown for free users) ──────────────────────────────────
-type WatermarkPosition = "top-right" | "top-left" | "bottom-right" | "bottom-left" | "top-center";
+type WatermarkPosition = "top-right" | "top-left" | "bottom-right" | "bottom-left" | "center" | "top-center";
 
 const WATERMARK_POSITIONS: WatermarkPosition[] = [
-  "top-right", "bottom-left", "top-left", "bottom-right", "top-center",
+  "top-right", "bottom-left", "top-left", "bottom-right", "center", "top-center",
 ];
 
 function getWatermarkStyle(pos: WatermarkPosition): React.CSSProperties {
@@ -58,6 +58,7 @@ function getWatermarkStyle(pos: WatermarkPosition): React.CSSProperties {
     case "top-left":     return { ...base, top: 56, left: 36 };
     case "bottom-right": return { ...base, bottom: 200, right: 36 };
     case "bottom-left":  return { ...base, bottom: 200, left: 36 };
+    case "center":       return { ...base, top: "45%", left: "50%", transform: "translate(-50%, -50%)" };
     case "top-center":   return { ...base, top: 56, left: "50%", transform: "translateX(-50%)" };
     default:             return { ...base, top: 56, right: 36 };
   }
@@ -72,8 +73,12 @@ function getWatermarkStyle(pos: WatermarkPosition): React.CSSProperties {
  * size and survives bright footage, and the pill is what makes it legible over
  * white backgrounds where plain white-on-white text used to disappear entirely.
  *
- * It still hops between five positions every 3 seconds and fades across the
- * hand-off, so it cannot be cropped out and does not sit on top of the captions.
+ * It hops between six positions every 3 seconds and fades across the hand-off,
+ * so it cannot be cropped out and does not sit on top of the captions. One of
+ * the six is dead centre: the four edges and the top band can all be cropped or
+ * covered at once by a re-frame, and the middle of the picture is the one place
+ * a thief cannot take away without taking the subject with it. It is placed at
+ * 45% of the height, clear of the hook at 7% and the captions at the bottom.
  */
 function WatermarkOverlay({ frame, totalFrames, fps }: { frame: number; totalFrames: number; fps: number }) {
   const segDur = 3 * fps;
