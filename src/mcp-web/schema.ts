@@ -14,8 +14,9 @@ import { z } from "zod";
  * clip plays in a full-width band with its text (videoScript[i].contentText)
  * above it and a brand watermark under it, like the reference videos.
  *
- * A new video's timeline is: [AI clip + hook text] → [screen recording + CTA]
- * → [logo image], music from its best part (lib/promo/build.ts).
+ * A new video's timeline is: [AI clip] → [screen recording + CTA] → [logo
+ * image], the hook as a text clip on Track 2 over the AI clip (so it can be
+ * moved and resized on its own), music from its best part (lib/promo/build.ts).
  *
  * Plain zod + core `remotion` only: the worker runs remotion 4.0.459 and zod 4.3.
  */
@@ -85,12 +86,18 @@ const scriptItemSchema = z
 
 export const captionWordSchema = z.object({ text: z.string(), start: z.number(), end: z.number() });
 
-/** An overlay clip on an extra track (shortshero's ExtraClip). Loose on purpose: the editor adds fields. */
+/**
+ * An overlay clip on an extra track (shortshero's ExtraClip). Loose on purpose: the editor adds fields.
+ * type "text" (this app's addition) draws `text` where a clip's text goes, above the band;
+ * `role: "hook"` marks the video's hook.
+ */
 export const extraClipSchema = z
   .object({
     id: z.string(),
-    url: z.string(),
-    type: z.enum(["image", "video", "audio"]),
+    url: z.string().default(""),
+    type: z.enum(["image", "video", "audio", "text"]),
+    text: z.string().optional(),
+    role: z.string().optional(),
     name: z.string().default(""),
     startFrame: z.number(),
     durationFrames: z.number(),
@@ -199,3 +206,33 @@ export const clipText = (p: Pick<PromoProps, "videoScript">, i: number) => {
   const s = p.videoScript[i];
   return (s?.contentText ?? s?.ContentText ?? "") as string;
 };
+
+export const HOOK_TRACK_ID = "track-2";
+export type ExtraClip = z.infer<typeof extraClipSchema>;
+
+/** The hook's text clip, wherever it was dragged to. */
+export function hookClip(p: Pick<PromoProps, "extraTracks">): ExtraClip | null {
+  for (const t of p.extraTracks ?? []) for (const c of t.clips ?? []) if (c.type === "text" && c.role === "hook") return c;
+  return null;
+}
+
+/**
+ * Moves the hook off clip 1 (videoScript[0]) onto its own text clip on Track 2,
+ * covering clip 1 exactly, so the video looks the same. Videos made before text
+ * clips existed get this when they're next opened or edited. No-op when there's
+ * already a hook clip or no hook text.
+ */
+export function withHookClip<T extends Pick<PromoProps, "extraTracks" | "videoScript" | "clipList" | "clipDurations" | "clipSourceOffsets">>(p: T): T {
+  const text = clipText(p, 0);
+  if (hookClip(p) || !text.trim()) return p;
+  const first = mainPieces(p)[0];
+  const clip: ExtraClip = { id: "hook", url: "", type: "text", role: "hook", name: "Hook", text, startFrame: 0, durationFrames: first?.durF ?? FPS * 3 };
+  const tracks = [...(p.extraTracks ?? [])];
+  while (tracks.length < 2) tracks.push({ id: `track-${tracks.length + 1}`, label: `Track ${tracks.length + 1}`, clips: [] });
+  const ti = Math.max(0, tracks.findIndex((t) => t.id === HOOK_TRACK_ID));
+  tracks[ti] = { ...tracks[ti], clips: [...tracks[ti].clips, clip] };
+  const videoScript = [...p.videoScript];
+  videoScript[0] = { ...videoScript[0], contentText: "" };
+  delete (videoScript[0] as { ContentText?: string }).ContentText;
+  return { ...p, extraTracks: tracks, videoScript };
+}

@@ -35,7 +35,11 @@ export function PromoVideo(props: PromoProps) {
         track.visible !== false
           ? track.clips.map((clip) => (
               <Sequence key={clip.id} from={Math.round(clip.startFrame ?? 0)} durationInFrames={Math.max(1, Math.round(clip.durationFrames ?? 30))}>
-                <ExtraClipLayer clip={clip} muted={track.muted === true} />
+                {clip.type === "text" ? (
+                  <TextClipLayer text={clip.text ?? ""} layout={props.layout} width={width} height={height} />
+                ) : (
+                  <ExtraClipLayer clip={clip} muted={track.muted === true} />
+                )}
               </Sequence>
             ))
           : null,
@@ -66,17 +70,24 @@ function MainPiece({ props, piece, width, height }: { props: PromoProps; piece: 
           <Img src={url} style={media} />
         )}
       </div>
-      {text.trim() && (
-        <div style={{ position: "absolute", left: 0, width, padding: "0 28px", boxSizing: "border-box", display: "flex", justifyContent: "center", ...(band.full ? { top: Math.round(height * 0.12) } : { bottom: height - band.top + layout.textGap }) }}>
-          <RichText text={text} layout={layout} shadow={band.full} />
-        </div>
-      )}
+      {text.trim() && <TextClipLayer text={text} layout={layout} width={width} height={height} />}
       {layout.showWatermark && layout.watermarkText && piece.clip.type === "video" && (
         <div style={{ position: "absolute", right: 44, top: band.full ? height - 260 : band.bottom + 70 }}>
           <RichText text={layout.watermarkText} layout={{ ...layout, fontSize: 40, fontWeight: 600, textColor: layout.accentColor }} inline />
         </div>
       )}
     </AbsoluteFill>
+  );
+}
+
+/** Text above the band (on top of the clip when it fills the frame): a clip's own text or a text clip. */
+function TextClipLayer({ text, layout, width, height }: { text: string; layout: Layout; width: number; height: number }) {
+  if (!text.trim()) return null;
+  const band = bandBox(layout, width, height);
+  return (
+    <div style={{ position: "absolute", left: 0, width, padding: "0 28px", boxSizing: "border-box", display: "flex", justifyContent: "center", ...(band.full ? { top: Math.round(height * 0.12) } : { bottom: height - band.top + layout.textGap }) }}>
+      <RichText text={text} layout={layout} shadow={band.full} />
+    </div>
   );
 }
 
