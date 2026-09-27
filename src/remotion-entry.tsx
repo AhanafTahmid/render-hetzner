@@ -17,6 +17,9 @@ import {
   calculateAeExplainerMetadata,
 } from "./compositions/ai-explainer/AeExplainerVideo";
 import { DEFAULT_COMPOSITION_ID } from "./constants";
+// mcp-web (ShortsPilot) — copied by mcp-web's `pnpm sync:worker`; don't edit src/mcp-web/ here.
+import "./mcp-web-fonts";
+import { McpWebCompositions } from "./mcp-web/Root";
 
 // Render-time metadata is carried in inputProps by every caller (durationInFrames,
 // width, height are sent alongside the editor data), so calculateMetadata reads
@@ -33,6 +36,7 @@ type SizedProps = { durationInFrames?: number; width?: number; height?: number }
 //   id "blog-template" → vidgpt themed blog templates  (vidgpt)
 //   id "whiteboard-explainer" → vidgpt whiteboard explainer (vidgpt)
 //   id "ai-explainer"  → vidgpt AI Explainer (Template 2)  (vidgpt)
+//   id "mcp-promo"     → hook + screen recording + logo promo (mcp-web)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const RemotionRoot = () => (
@@ -236,6 +240,9 @@ const RemotionRoot = () => (
       height={1080}
       defaultProps={{ storyboard: null, bundle: null, extraTracks: [] }}
     />
+
+    {/* ── mcp-web ────────────────────────────────────────────────────────── */}
+    <McpWebCompositions />
   </>
 );
 

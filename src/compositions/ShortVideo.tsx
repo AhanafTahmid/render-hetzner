@@ -633,6 +633,13 @@ export const ShortComposition = ({
   const stackedRange = speakerLayout === "split" ? activeRange(stackedRanges, clipTime) : null;
   const stackedSpeakers = stackedRange !== null;
   const activeSlots = Number(stackedRange?.slots) || Number(speakerSlots) || 2;
+  // A shape the slot count cannot describe — three people as one over two, or
+  // a reaction's show over its webcams — carries its own seam. Both seam
+  // half-way, where three bands would put the captions across a face.
+  const rangeSeam =
+    typeof stackedRange?.seamY === "number" && stackedRange.seamY > 0 && stackedRange.seamY < 1
+      ? stackedRange.seamY
+      : null;
 
   // ── Where the hook title goes ──────────────────────────────────────────────
   //
@@ -646,7 +653,7 @@ export const ShortComposition = ({
   // frame is still either a picture that can carry text or a face the hook was
   // always going to sit above.
   const hasHook = typeof hookText === "string" && hookText.trim() !== "";
-  const hookSeam = hasHook && stackedSpeakers ? hookSeamY(activeSlots) : null;
+  const hookSeam = hasHook && stackedSpeakers ? rangeSeam ?? hookSeamY(activeSlots) : null;
   // Is the headline actually on screen at THIS frame? A hook is usually set to
   // 3 seconds, so for most of the clip the answer is no and the captions are
   // free to take the seam back.
@@ -658,7 +665,7 @@ export const ShortComposition = ({
   // cutaway always seams at the middle, and it wins when both are on screen:
   // its own half-frame geometry is what the captions have to clear.
   const rawCaptionSeam =
-    activeSplit !== null ? true : stackedSpeakers ? stackSeamY(activeSlots) : false;
+    activeSplit !== null ? true : stackedSpeakers ? rangeSeam ?? stackSeamY(activeSlots) : false;
 
   // Two bands (and a 2x2 of four) have exactly ONE seam, and both the hook and
   // the captions want it. The hook wins for as long as it is up — it is the
@@ -800,9 +807,9 @@ function clipTimeAt(
  * frames that are stacked.
  */
 function activeRange(
-  ranges: { start: number; end: number; slots?: number }[] | undefined | null,
+  ranges: { start: number; end: number; slots?: number; seamY?: number }[] | undefined | null,
   t: number
-): { start: number; end: number; slots?: number } | null {
+): { start: number; end: number; slots?: number; seamY?: number } | null {
   if (!Array.isArray(ranges) || ranges.length === 0) return null;
   return ranges.find((r) => t >= Number(r?.start) && t <= Number(r?.end)) ?? null;
 }

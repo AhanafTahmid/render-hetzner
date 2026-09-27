@@ -181,6 +181,39 @@ export function slotGeometry(slots: number): SlotGeometry {
   return { cols, rows, slotW: OUTPUT_W / cols, slotH: OUTPUT_H / rows };
 }
 
+/** Output cells per row, top to bottom, for the plain shape of `slots`. */
+export function rowsFor(slots: number): number[] {
+  const { cols, rows } = slotGeometry(slots);
+  return Array.from({ length: rows }, () => cols);
+}
+
+/** One slot of the output frame, in output pixels. */
+export interface OutCell {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Every cell of a layout described as cells-per-row, in row-major order.
+ *
+ * Rows share the frame's height equally and a row's cells share its width, so
+ * [1, 1] is the 50/50 split, [1, 1, 1] three bands, [2, 2] the 2x2, and [1, 2]
+ * / [2, 1] the three-person "one over two" / "two over one". The last two are
+ * why a three-shot is not always three bands: when the source already lays
+ * three people out as a pair and a single — a three-person video call, or two
+ * hosts over a guest — that is the shape to keep. Three 1080x640 bands would
+ * cut every tile of such a source through the middle, and a pair row's cells
+ * come out 540x960, exactly 9:16, the same portrait cell the 2x2 uses.
+ */
+export function layoutCells(rows: number[], frameW = OUTPUT_W, frameH = OUTPUT_H): OutCell[] {
+  const rowH = frameH / rows.length;
+  return rows.flatMap((n, r) =>
+    Array.from({ length: n }, (_, c) => ({ x: (frameW / n) * c, y: rowH * r, w: frameW / n, h: rowH }))
+  );
+}
+
 /**
  * How far apart two face clusters must sit, as a fraction of source width, to
  * be two people rather than one person plus detector jitter. 0.18 of a 1920px
@@ -202,7 +235,7 @@ const MULTI_UP_MIN_SEPARATION = 0.18;
  * neighbour a crop window must stop before, and which coordinate says two
  * windows are showing different people.
  */
-export type StackAxis = "x" | "y" | "grid";
+export type StackAxis = "x" | "y" | "grid" | "tri";
 
 /**
  * The same separation test as above, for speakers stacked VERTICALLY, as a
@@ -229,6 +262,8 @@ export type StackAxis = "x" | "y" | "grid";
  * down 1080px sit ~0.25 of frame height apart.
  */
 const MULTI_UP_MIN_SEPARATION_V = 0.16;
+/** How far from the frame's centre line a pair-and-single's single may sit. See `triCandidate`. */
+const MULTI_UP_TRI_CENTRE_TOL = 0.15;
 /**
  * How far a 2x2's estimated panel seam may sit from the exact half of the frame
  * and still be treated as an even split, as a fraction of the frame extent.
@@ -1381,7 +1416,7 @@ export async function probeSpeakers(
   srcW: number,
   srcH: number,
   slices: number = 1
-): Promise<{ perFrame: FaceBox[][]; probeFps: number }> {
+): Promise<{ perFrame: FaceBox[][]; probeFps: number; pixels: BlockLuma }> {
   const w = Math.max(2, Math.round(PROBE_W / 2) * 2);
   const h = Math.max(2, Math.round((srcH / srcW) * w / 2) * 2);
   const dur = Math.max(1, clipDur);
@@ -1432,7 +1467,79 @@ export async function probeSpeakers(
   // The rate comes back with the frames because it is the only thing that turns
   // a frame index into a timestamp, and the ranges planMultiUp returns are
   // timestamps.
-  return { perFrame, probeFps };
+  return { perFrame, probeFps, pixels: blockLuma(frames, w, h) };
+}
+
+/**
+ * The probe's frames reduced to a coarse brightness grid, one per sample.
+ *
+ * The heads say where the PEOPLE are; this says what the rest of the picture
+ * is doing, which two decisions need and MoveNet cannot give:
+ *
+ *   - where a tile's picture ends. A video call centres a lone tile between
+ *     black bars, and a crop sized off the face alone reaches into them.
+ *   - whether the frame around a webcam is a show. Content moves and cuts at
+ *     1fps; the room behind a call participant does not. See `planReaction`.
+ *
+ * PROBE_BLOCK_COLS x PROBE_BLOCK_ROWS blocks of mean luma, 0-255. At the
+ * probe's 640px that is a 20px block, finer than any tile edge worth finding
+ * and small enough that ~60 samples cost nothing to keep.
+ */
+export interface BlockLuma {
+  cols: number;
+  rows: number;
+  /** One grid per sampled frame, row-major. */
+  frames: Float32Array[];
+}
+
+const PROBE_BLOCK_COLS = 32;
+const PROBE_BLOCK_ROWS = 18;
+
+function blockLuma(frames: Uint8Array[], w: number, h: number): BlockLuma {
+  const cols = PROBE_BLOCK_COLS;
+  const rows = PROBE_BLOCK_ROWS;
+  const out = frames.map((f) => {
+    const sum = new Float32Array(cols * rows);
+    const n = new Float32Array(cols * rows);
+    // Every 2nd pixel on both axes is plenty for a mean over a 20px block.
+    for (let y = 0; y < h; y += 2) {
+      const by = Math.min(rows - 1, Math.floor((y * rows) / h));
+      for (let x = 0; x < w; x += 2) {
+        const bx = Math.min(cols - 1, Math.floor((x * cols) / w));
+        const i = (y * w + x) * 3;
+        sum[by * cols + bx] += 0.299 * f[i] + 0.587 * f[i + 1] + 0.114 * f[i + 2];
+        n[by * cols + bx]++;
+      }
+    }
+    for (let k = 0; k < sum.length; k++) sum[k] /= Math.max(1, n[k]);
+    return sum;
+  });
+  return { cols, rows, frames: out };
+}
+
+/**
+ * The lit span of columns around `cx` inside the horizontal band [y0, y1),
+ * all as fractions of the frame. A column is dark when every block of it in
+ * the band stays under PICTURE_DARK_LUMA on every sample — a letterbox bar,
+ * not a dark scene, which would brighten somewhere over a clip.
+ */
+const PICTURE_DARK_LUMA = 24;
+function litSpan(px: BlockLuma, y0: number, y1: number, cx: number): { x0: number; x1: number } {
+  const r0 = Math.max(0, Math.floor(y0 * px.rows));
+  const r1 = Math.min(px.rows, Math.ceil(y1 * px.rows));
+  const lit = (c: number) => {
+    for (const f of px.frames) {
+      for (let r = r0; r < r1; r++) if (f[r * px.cols + c] >= PICTURE_DARK_LUMA) return true;
+    }
+    return false;
+  };
+  const c0 = Math.min(px.cols - 1, Math.max(0, Math.floor(cx * px.cols)));
+  if (!lit(c0)) return { x0: 0, x1: 1 };
+  let a = c0;
+  let b = c0;
+  while (a > 0 && lit(a - 1)) a--;
+  while (b < px.cols - 1 && lit(b + 1)) b++;
+  return { x0: a / px.cols, x1: (b + 1) / px.cols };
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -1491,6 +1598,31 @@ export interface MultiUpLayout {
    * and disjoint from every OTHER layout's ranges as well.
    */
   ranges: TimeRange[];
+  /**
+   * Output cells per row, top to bottom — see `layoutCells`. Absent means the
+   * plain shape for `slots` (`rowsFor`): bands, or a 2x2 for four.
+   */
+  rows?: number[];
+  /**
+   * Per-crop size in source pixels, in slot order, for a layout whose cells
+   * are not all one shape (the "one over two" three-shot). Absent means every
+   * crop is `boxW` x `boxH`.
+   */
+  sizes?: { w: number; h: number }[];
+  /**
+   * A reaction layout: the source's content, fitted into one half of the
+   * frame over a blurred copy of itself, with the webcam crops in the other.
+   * See `planReaction`.
+   */
+  reaction?: ReactionContent;
+}
+
+/** Where a reaction layout's content sits in the source, and which half it takes. */
+export interface ReactionContent {
+  /** The content's rectangle in source pixels, even-sized. */
+  box: { x: number; y: number; w: number; h: number };
+  /** The half of the OUTPUT frame the content takes; the speakers get the other. */
+  at: "top" | "bottom";
 }
 
 export interface MultiUpPlan {
@@ -1531,6 +1663,16 @@ export interface TimeRange {
    * `speakerSlots` is the answer for every range; consumers fall back to it.
    */
   slots?: number;
+  /**
+   * Where the captions go over this range, as a fraction of frame height: the
+   * one horizontal line in the stack that covers nobody.
+   *
+   * Only written by shapes whose seam is NOT what `slots` alone implies — the
+   * three-person "one over two" (half-way, where three bands seam at thirds)
+   * and the reaction layout. Absent everywhere else, and readers fall back to
+   * the slot count exactly as they always did.
+   */
+  seamY?: number;
 }
 
 /** Total length of a set of disjoint ranges, in seconds. */
@@ -1571,6 +1713,51 @@ function subtractRanges(ranges: TimeRange[], taken: TimeRange[]): TimeRange[] {
   return out
     .filter((r) => r.end - r.start >= MULTI_UP_MIN_RUN_S)
     .sort((a, b) => a.start - b.start);
+}
+
+/**
+ * `ranges` merged into disjoint ascending runs, closing any gap of up to
+ * MULTI_UP_MIN_RUN_S — the width of the two guard bands `subtractRanges` cuts,
+ * and too short to be a shot of its own.
+ */
+function unionRanges(ranges: TimeRange[]): TimeRange[] {
+  const out: TimeRange[] = [];
+  for (const r of [...ranges].sort((a, b) => a.start - b.start)) {
+    const last = out[out.length - 1];
+    if (last && r.start - last.end <= MULTI_UP_MIN_RUN_S) last.end = Math.max(last.end, r.end);
+    else out.push({ ...r });
+  }
+  return out;
+}
+
+/**
+ * How close, in fractions of the frame, a smaller group's head must sit to one
+ * of a grid's heads to be that same person.
+ *
+ * Grid heads are at least MULTI_UP_MIN_SEPARATION (0.18) apart, so 0.08 cannot
+ * match one person to two cells. A webcam tile's head moves far less than that;
+ * a cut to speaker view moves it much further (a centred face at ~0.5, 0.4 is
+ * over 0.2 from every cell of a 2x2).
+ */
+const MULTI_UP_GRID_SAME_PERSON = 0.08;
+
+/** Is every head of `small` one of `grid`'s heads, each a different one? */
+function isSubsetOfGrid(small: Candidate, grid: Candidate): boolean {
+  const slotMedians = (c: Candidate) =>
+    Array.from({ length: c.size }, (_, k) => ({
+      x: median(c.groups.map((g) => g.faces[k].cx)),
+      y: median(c.groups.map((g) => g.faces[k].cy)),
+    }));
+  const cells = slotMedians(grid);
+  const used = new Set<number>();
+  for (const p of slotMedians(small)) {
+    const hit = cells.findIndex(
+      (q, j) => !used.has(j) && Math.hypot(p.x - q.x, p.y - q.y) <= MULTI_UP_GRID_SAME_PERSON
+    );
+    if (hit < 0) return false;
+    used.add(hit);
+  }
+  return true;
 }
 
 function median(xs: number[]): number {
@@ -1746,13 +1933,65 @@ function cleanGroup(
     return ordered;
   };
 
+  /**
+   * The three-person "one over two": a pair on one row and a single on the
+   * other, which is how a three-way video call lays itself out (two tiles over
+   * one centred below it) and how a show frames two hosts over a guest.
+   *
+   * The 1D candidates read this shape as three bands, because on x the three
+   * heads usually DO clear the separation bar — at cx 0.25 / 0.50 / 0.75 they
+   * are 0.25 apart. Three 1080x640 bands of it cut each tile through the middle
+   * and put the seam between rows of the source across the middle band. Kept as
+   * a pair and a single instead, every output cell maps onto one source tile.
+   *
+   * Returned in ROW-MAJOR order, the single's row and the pair's row in the
+   * order they sit in the source, the pair left to right — the order
+   * `layoutCells` hands out cells in.
+   */
+  const triCandidate = (): FaceBox[] | null => {
+    if (faces.length !== 3) return null;
+    const byY = [...faces].sort((a, b) => a.cy - b.cy);
+    // Which gap is the row break: the only one of the two that clears the
+    // vertical bar. Both clearing it is a rail; neither, a single row.
+    const gaps = [byY[1].cy - byY[0].cy, byY[2].cy - byY[1].cy];
+    const breaks = gaps.map((g) => g >= MULTI_UP_MIN_SEPARATION_V);
+    if (breaks[0] === breaks[1]) return null;
+    const [top, bottom] = breaks[0] ? [byY.slice(0, 1), byY.slice(1)] : [byY.slice(0, 2), byY.slice(2)];
+    // Two ROWS of a layout sit on opposite sides of the frame's middle. Three
+    // people on one sofa where one of them slouches can clear the vertical bar
+    // too, and they are one row with an uneven head line, not a pair and a
+    // single — they stay three bands.
+    if (!(Math.max(...top.map((f) => f.cy)) < 0.5 && Math.min(...bottom.map((f) => f.cy)) > 0.5)) {
+      return null;
+    }
+    const pair = top.length === 2 ? top : bottom;
+    if (Math.abs(pair[0].cx - pair[1].cx) < MULTI_UP_MIN_SEPARATION) return null;
+    // The single sits centred, between the pair — that is what makes it a
+    // pair-and-single layout rather than three heads that happen to be on two
+    // rows. Measured on the two sources that fooled it without this: a
+    // six-tile Zoom gallery with three people missed (the "single" at cx 0.85,
+    // under the right-hand member of the pair) and a sports graphic whose two
+    // printed coaches paired up over a webcam at the left edge. Both were
+    // stacked as one over two, showing half a gallery and a picture of two
+    // coaches. A three-way call centres its lone tile at 0.50.
+    const lone = (top.length === 1 ? top : bottom)[0];
+    const [pl, pr] = [...pair].sort((a, b) => a.cx - b.cx);
+    if (!(lone.cx > pl.cx && lone.cx < pr.cx && Math.abs(lone.cx - 0.5) <= MULTI_UP_TRI_CENTRE_TOL)) return null;
+    const lr = (row: FaceBox[]) => [...row].sort((a, b) => a.cx - b.cx);
+    return [...lr(top), ...lr(bottom)];
+  };
+
   const asGrid = gridCandidate();
+  const asTri = triCandidate();
   const byX = candidate("x");
   const byY = candidate("y");
   // A 2x2 keeps all four speakers where the 1D pair can find at most two of
   // them, so it wins outright — the same "largest group takes the clip" rule
   // planMultiUp applies to its own candidates.
   if (asGrid) return { faces: asGrid, axis: "grid" };
+  // Same rule for the pair-and-single: a source that already lays three people
+  // out on two rows is two rows of output, never three bands.
+  if (asTri) return { faces: asTri, axis: "tri" };
   if (!byX && !byY) return null;
   if (!byY) return { faces: byX!, axis: "x" };
   if (!byX) return { faces: byY, axis: "y" };
@@ -1762,6 +2001,14 @@ function cleanGroup(
   return crossSpread(byY, "y") < crossSpread(byX, "x")
     ? { faces: byY, axis: "y" }
     : { faces: byX, axis: "x" };
+}
+
+/**
+ * Is this a layout whose speakers are separated on BOTH axes — the 2x2 and the
+ * pair-and-single — so that "where slot k sits" is a point, not a coordinate?
+ */
+function is2D(axis: StackAxis): boolean {
+  return axis === "grid" || axis === "tri";
 }
 
 /** The separating coordinate of a head, for whichever axis won the group. */
@@ -1839,7 +2086,7 @@ function buildStackRanges(
   }));
   const gridDist = (ax: number, ay: number, bx: number, by: number) =>
     Math.hypot(ax - bx, ay - by);
-  const refPos = axis === "grid" ? [] : Array.from({ length: slots }, (_, k) =>
+  const refPos = is2D(axis) ? [] : Array.from({ length: slots }, (_, k) =>
     median(groups.map((g) => axisOf(axis, g.faces[k])))
   );
   const refH = median(groups.flatMap((g) => g.faces.map((f) => f.h)));
@@ -1873,11 +2120,11 @@ function buildStackRanges(
   // and the spread is a radius about the slot's own median. Same question as
   // the 1D case ("has this head moved further than this head ever moves"),
   // same floor, two axes.
-  const halfGap = axis === "grid"
+  const halfGap = is2D(axis)
     ? Math.min(...refPt.flatMap((p, i) =>
         refPt.filter((_, j) => j !== i).map((q) => gridDist(p.x, p.y, q.x, q.y) / 2)))
     : Math.min(...refPos.slice(1).map((p, k) => (p - refPos[k]) / 2));
-  const posTol = axis === "grid"
+  const posTol = is2D(axis)
     ? refPt.map((p, k) => {
         const spread = Math.max(
           ...groups.map((g) => gridDist(g.faces[k].cx, g.faces[k].cy, p.x, p.y))
@@ -1899,7 +2146,7 @@ function buildStackRanges(
    * stack over such a stretch is still a crop of the same source.
    */
   const isOneOfTheGroup = (b: FaceBox): boolean =>
-    (axis === "grid"
+    (is2D(axis)
       ? refPt.some((p, k) => gridDist(b.cx, b.cy, p.x, p.y) <= posTol[k])
       : refPos.some((p, k) => Math.abs(axisOf(axis, b) - p) <= posTol[k])) &&
     b.h <= refH * MULTI_UP_SAME_SHOT_H_RATIO &&
@@ -2024,7 +2271,8 @@ export function planMultiUp(
   srcW: number,
   srcH: number,
   probeFps: number,
-  clipDur: number
+  clipDur: number,
+  pixels?: BlockLuma
 ): MultiUpPlan | null {
   // Every rejection says why. A bare `return null` made a group shot that failed
   // to stack indistinguishable from one that was never a group shot — there was
@@ -2194,6 +2442,90 @@ export function planMultiUp(
    * property of THIS clip — the source size, the sampled frames, the reject
    * logger — and passing eight of those through a signature buys nothing.
    */
+  /**
+   * The "one over two" / "two over one" three-shot — see `layoutCells`.
+   *
+   * Built the way the 2x2 is: every crop is clamped inside its own source
+   * cell, because what it must not cross is the seam between two tiles, not a
+   * neighbour's face. The cells here are the pair's two halves of their row and
+   * the single's whole row.
+   *
+   * The single's output cell is 1080x960 and each of the pair's is 540x960, so
+   * the crops cannot share a box the way every other layout's do. They share a
+   * HEIGHT instead: every cell is 960 tall, so one crop height scales every
+   * head by the same factor, which is the property "one box size positioned N
+   * times" exists to protect. Only the width follows each cell's shape.
+   */
+  const buildPairAndSingle = (
+    slots: number,
+    perSlot: FaceBox[][],
+    faceH: number,
+    ranges: TimeRange[],
+    stackedSecs: number
+  ): MultiUpLayout | null => {
+    const cxs = perSlot.map((boxes) => median(boxes.map((f) => f.cx)));
+    const cys = perSlot.map((boxes) => median(boxes.map((f) => f.cy)));
+    // Row-major from `cleanGroup`: slot 0 alone on its row means the single is
+    // on top, otherwise slots 0 and 1 are the pair.
+    const singleTop = Math.abs(cys[0] - cys[1]) >= MULTI_UP_MIN_SEPARATION_V;
+    const rows = singleTop ? [1, 2] : [2, 1];
+    const cells = layoutCells(rows);
+    const single = singleTop ? 0 : 2;
+    const pair = singleTop ? [1, 2] : [0, 1];
+
+    const snapSeam = (est: number) => (Math.abs(est - 0.5) <= MULTI_UP_SEAM_SNAP ? 0.5 : est);
+    const ySeam = snapSeam((cys[single] + median(pair.map((k) => cys[k]))) / 2) * srcH;
+    const xSeam = snapSeam((cxs[pair[0]] + cxs[pair[1]]) / 2) * srcW;
+    const cellOf = (k: number) => {
+      const onTop = singleTop ? k === single : k !== single;
+      const y0 = onTop ? 0 : ySeam;
+      const y1 = onTop ? ySeam : srcH;
+      if (k === single) {
+        // The single's row usually holds one centred tile between black bars
+        // (a three-way call), so its cell is the lit span, not the whole row —
+        // otherwise a crop wider than the tile shows a strip of the bar.
+        const lit = pixels ? litSpan(pixels, y0 / srcH, y1 / srcH, cxs[k]) : { x0: 0, x1: 1 };
+        return { x0: lit.x0 * srcW, x1: lit.x1 * srcW, y0, y1 };
+      }
+      return k === pair[0] ? { x0: 0, x1: xSeam, y0, y1 } : { x0: xSeam, x1: srcW, y0, y1 };
+    };
+
+    const aspect = cells.map((c) => c.w / c.h);
+    const faceHPx = faceH * srcH;
+    // Every cell is 960 tall, like the 2x2's, so it takes the 2x2's head size.
+    const wantH = faceHPx / (MULTI_UP_FACE_TARGET_H[4] ?? 0.30);
+    const capH = Math.min(...perSlot.map((_, k) => {
+      const c = cellOf(k);
+      return Math.min(c.y1 - c.y0, (c.x1 - c.x0) / aspect[k]);
+    }));
+    const floorH = Math.min(cells[0].h / MULTI_UP_MAX_UPSCALE, capH);
+    const boxH = evenClamped(Math.max(Math.min(wantH, capH), floorH), 2, srcH);
+    const sizes = aspect.map((a) => ({ w: evenClamped(boxH * a, 2, srcW), h: boxH }));
+    const faceInBox = boxH >= faceHPx ? MULTI_UP_FACE_IN_BOX : MULTI_UP_FACE_IN_BOX_TIGHT;
+    const crops = perSlot.map((_, k) => {
+      const c = cellOf(k);
+      const { w, h } = sizes[k];
+      return {
+        x: evenClamped(cxs[k] * srcW - w / 2, c.x0, Math.max(c.x0, c.x1 - w)),
+        y: evenClamped(cys[k] * srcH - faceInBox * h, c.y0, Math.max(c.y0, c.y1 - h)),
+      };
+    });
+
+    console.log(
+      `[facetrack] 3-shot as ${singleTop ? "one over two" : "two over one"} ` +
+      `(crops ${sizes.map((z) => `${z.w}×${z.h}`).join(" / ")}, head ${((faceHPx / boxH) * 100).toFixed(0)}% of a cell) ` +
+      `in ${ranges.length} stretch(es) totalling ${stackedSecs.toFixed(1)}s of ${clipDur.toFixed(1)}s: ` +
+      ranges.map((r) => `${r.start.toFixed(1)}–${r.end.toFixed(1)}s`).join(", ")
+    );
+
+    return {
+      slots, axis: "tri", boxW: sizes[single].w, boxH, crops, rows, sizes,
+      // Both rows are 960 tall, so the one seam is half-way — not at the thirds
+      // that `slots: 3` alone would put the captions on.
+      ranges: ranges.map((r) => ({ ...r, slots, seamY: 0.5 })),
+    };
+  };
+
   const buildLayout = (cand: Candidate, ranges: TimeRange[]): MultiUpLayout | null => {
     const { size: slots, axis, groups, kept } = cand;
     const stackedSecs = totalSecs(ranges);
@@ -2220,6 +2552,8 @@ export function planMultiUp(
     // latched onto a hand or a bystander must not move the framing.
     const faceH = median(perSlot.map((boxes) => median(boxes.map((f) => f.h))));
     if (!(faceH > 0)) return reject("measured face height was zero");
+
+    if (axis === "tri") return buildPairAndSingle(slots, perSlot, faceH, ranges, stackedSecs);
 
     // ── The crop is ALWAYS the slot's shape ───────────────────────────────────
     //
@@ -2491,8 +2825,29 @@ export function planMultiUp(
     // camera in it. A clip that genuinely changes shape three times in thirty
     // seconds is a montage, and the single-speaker camera is the better answer
     // for the third shape than a third layout is.
-    const layout = runnerUp ? buildLayout(runnerUp.cand, runnerUp.free) : null;
-    if (layout) layouts.push(layout);
+    if (runnerUp && is2D(dominant.axis) && isSubsetOfGrid(runnerUp.cand, chosen)) {
+      // Not a different shot: the same people in the same cells of the same
+      // grid, with somebody missed. Stacking it cuts the grid by COLUMNS — two
+      // people per 1080x960 band, split at the tile seam — so the grid keeps
+      // those stretches instead. Measured on pmuigwpf9zjv0go: a 2x2 for 0–9.6s,
+      // then 2-ups at 10.3–14.4s and 18.2–22s holding the grid's own top row.
+      console.log(
+        `[facetrack] ${runnerUp.cand.size}-up is the grid's own people with somebody missed — ` +
+        `keeping the grid for its ${totalSecs(runnerUp.free).toFixed(1)}s.`
+      );
+      layouts[0] = {
+        ...dominant,
+        ranges: unionRanges([...dominant.ranges, ...runnerUp.free]).map((r) => ({
+          ...r,
+          slots: dominant.slots,
+          // The grid's own seam, when its shape has one `slots` cannot imply.
+          ...(dominant.ranges[0]?.seamY !== undefined ? { seamY: dominant.ranges[0].seamY } : {}),
+        })),
+      };
+    } else {
+      const layout = runnerUp ? buildLayout(runnerUp.cand, runnerUp.free) : null;
+      if (layout) layouts.push(layout);
+    }
   }
 
   const stackedTotal = totalSecs(takenRanges(layouts));
@@ -2513,6 +2868,259 @@ export function planMultiUp(
  * sliced probe is run to check it. See the use site.
  */
 const MULTI_UP_RESLICE_COVERAGE = 0.5;
+
+/**
+ * Might this whole-frame plan be a 2x2 the probe only partly saw?
+ *
+ * A four-camera call the whole-frame probe reads poorly can still come out as a
+ * 2-up over most of the clip — enough coverage that the trigger above never
+ * fires, so the sliced pass that finds the grid never runs. The 2-up then
+ * stacks two COLUMNS of the grid as 1080x960 bands, each holding two people cut
+ * at the tile seam, which reads as "four faces in a row". Two shapes of it, both
+ * measured:
+ *
+ * - The grid was seen, just not for long enough to win. pmuigv12so3x61m (Zoom
+ *   gallery, bottom row shifted toward the middle): four heads on 5 of 60
+ *   frames, so a 4-up/grid got 16s against a 2-up's 42s and lost. Sliced, it
+ *   is four heads on 35 of 60 frames and a grid for 59s.
+ * - Only one ROW was seen. pmuigwpf9zjv0go (Zoom 2x2, dark bottom-right tile):
+ *   the bottom row on 1 of 24 frames, so the plan is a clean full-length 2-up
+ *   with every head in one half of the frame. Head bottoms (cy + h/2) sat at a
+ *   median 0.40, never past 0.45; four real side-by-side 2-ups from other
+ *   projects ended at 0.51, 0.68, 0.70 and 0.70. The bottom-row case is the
+ *   mirror image. Sliced, it is a grid for 16.5 of 22s.
+ */
+function mayBeMissingAGrid(plan: MultiUpPlan, perFrame: FaceBox[][]): boolean {
+  const dominant = plan.layouts[0];
+  if (!dominant || dominant.axis === "grid") return false;
+  if (plan.layouts.some((l) => l.axis === "grid")) return true;
+  if (dominant.slots !== 2 || dominant.axis !== "x") return false;
+  const heads = perFrame.filter((f) => f.length === 2).flat();
+  if (heads.length === 0) return false;
+  const top = median(heads.map((b) => b.cy - b.h / 2));
+  const bottom = median(heads.map((b) => b.cy + b.h / 2));
+  return bottom < 0.5 || top > 0.5;
+}
+
+// ─── Reaction layout ─────────────────────────────────────────────────────────
+//
+// A reaction video is one or two people watching a show, and both camera paths
+// get it wrong. The single-speaker camera crops a 9:16 window around the
+// reactor (or around a character in the show) and throws the show away; the
+// stack puts two reactors 50/50 and throws the show away. The show is half of
+// what the viewer came for.
+//
+// Two shapes, told apart by how much of the picture the show takes, because
+// they need different answers:
+//
+//   - The show in a WINDOW beside a reactor who sits still — a streamer down
+//     the left of a picture-in-picture. The window is found as the compact
+//     block of picture that keeps changing, and the output is that window,
+//     fitted whole over a blurred copy of itself in one half, with the reactor
+//     cropped to their face in the other. See `REACT_MIN_ACTIVE`.
+//   - The show FULL-FRAME with the reactors as small overlays inside it — a
+//     circle in each bottom corner of an episode. The overlays cannot be found
+//     reliably at the probe's 1fps (MoveNet sees the corner circles on a third
+//     of samples, and the show's own characters more often than that), and
+//     they do not need to be: fitting the whole frame over the blurred
+//     background keeps the show AND every overlay, which is the right picture.
+//     See `REACT_FULL_ACTIVE`.
+//
+// What neither must catch is a call or a podcast, and the tell for both is the
+// same measurement: how often the picture around the people changes between
+// samples a second apart. Calibrated on 29 real clips (10 reaction, 19 calls,
+// panels and podcast masters):
+//
+//   | source                                   | active | median change |
+//   |------------------------------------------|--------|---------------|
+//   | show in a window beside a still reactor  | 16-18% | 0%            |
+//   | show full-frame, webcams overlaid        | 65-88% | 26-35%        |
+//   | video calls and panels (fixed heads)     | 0-3%   | 0-3%          |
+//   | podcast masters that cut between cameras | 12-27% | 3-21%         |
+//
+// "active" is the share of the frame, outside any fixed reactor, that changes
+// on at least REACT_ACTIVE_FREQ of samples; "median change" is that frequency
+// for the median block of the whole frame.
+
+/** How close two heads must be, in fractions of the frame, to be one person sitting still. */
+const REACT_SAME_CAM = 0.06;
+/** Fraction of samples a reactor must be seen on, in the same place, to be "sitting still". */
+const REACT_MIN_PRESENCE = 0.8;
+/** Most reactors the layout holds — one fills the half, two share it. */
+const REACT_MAX_CAMS = 2;
+/** A block "changes" between two samples when its mean luma moves by more than this. */
+const REACT_BLOCK_DELTA = 20;
+/** A block is part of the show when it changes on at least this share of samples. */
+const REACT_ACTIVE_FREQ = 0.25;
+/** Least share of the frame outside the reactors that must be show, for the window shape. */
+const REACT_MIN_ACTIVE = 0.1;
+/** How much of the show's bounding box must itself be changing — a window, not scattered motion. */
+const REACT_MIN_FILL = 0.45;
+/** Least share of the frame changing, and least median change, for the full-frame shape. */
+const REACT_FULL_ACTIVE = 0.5;
+const REACT_FULL_MEDIAN = 0.24;
+/** Gap between runs of the reactor being seen that is still one stretch, in seconds. */
+const REACT_GAP_BRIDGE_S = 4;
+/** Head height as a fraction of the reactor cell's height. */
+const REACT_FACE_TARGET_H = 0.34;
+/** Most a reactor crop may be scaled up. */
+const REACT_MAX_UPSCALE = 3;
+
+export type ReactionResult =
+  | { kind: "window"; plan: MultiUpPlan }
+  | { kind: "fullFrame"; activeShare: number; medianChange: number };
+
+export function planReaction(
+  perFrame: FaceBox[][],
+  srcW: number,
+  srcH: number,
+  probeFps: number,
+  clipDur: number,
+  pixels: BlockLuma
+): ReactionResult | null {
+  const frames = perFrame.length;
+  const quiet = (why: string): null => {
+    console.log(`[facetrack] Not a reaction: ${why}`);
+    return null;
+  };
+  if (frames < 4 || pixels.frames.length !== frames) return quiet("too few samples");
+  const { cols, rows } = pixels;
+  const N = cols * rows;
+
+  /** Share of sample pairs on which each block changed. */
+  const freq = new Float32Array(N);
+  for (let i = 1; i < frames; i++) {
+    const a = pixels.frames[i - 1], b = pixels.frames[i];
+    for (let k = 0; k < N; k++) if (Math.abs(a[k] - b[k]) > REACT_BLOCK_DELTA) freq[k]++;
+  }
+  for (let k = 0; k < N; k++) freq[k] /= frames - 1;
+  const medianChange = median(Array.from(freq));
+  const activeAll = Array.from(freq).filter((v) => v >= REACT_ACTIVE_FREQ).length / N;
+
+  // ── The show full-frame ──
+  if (activeAll >= REACT_FULL_ACTIVE && medianChange >= REACT_FULL_MEDIAN) {
+    console.log(
+      `[facetrack] Reaction, show full-frame: ${(activeAll * 100).toFixed(0)}% of the picture changes, ` +
+      `median block ${(medianChange * 100).toFixed(0)}% of samples — fitting the whole frame.`
+    );
+    return { kind: "fullFrame", activeShare: activeAll, medianChange };
+  }
+
+  // ── The show in a window beside a still reactor ──
+  const clusters: { cx: number; cy: number; hs: number[]; seen: Set<number> }[] = [];
+  perFrame.forEach((heads, i) => {
+    for (const b of heads) {
+      const c = clusters.find((q) => Math.hypot(q.cx - b.cx, q.cy - b.cy) <= REACT_SAME_CAM);
+      if (c) { c.hs.push(b.h); c.seen.add(i); }
+      else clusters.push({ cx: b.cx, cy: b.cy, hs: [b.h], seen: new Set([i]) });
+    }
+  });
+  const cams = clusters
+    .filter((c) => c.seen.size / frames >= REACT_MIN_PRESENCE)
+    .map((c) => ({ ...c, h: median(c.hs) }))
+    .sort((a, b) => a.cx - b.cx);
+  if (cams.length === 0) return quiet("nobody sits still and the picture is not a show");
+  if (cams.length > REACT_MAX_CAMS) return quiet(`${cams.length} people sit still — a call or a panel`);
+
+  // Each reactor's own region — head, shoulders and a margin — is not show.
+  const camBlock = new Uint8Array(N);
+  for (const c of cams) {
+    const fw = (c.h / HEAD_ASPECT) * (srcH / srcW);
+    for (let r = 0; r < rows; r++) for (let q = 0; q < cols; q++) {
+      const bx = (q + 0.5) / cols, by = (r + 0.5) / rows;
+      if (Math.abs(bx - c.cx) <= 2 * fw && by >= c.cy - 1.2 * c.h && by <= c.cy + 2.5 * c.h) camBlock[r * cols + q] = 1;
+    }
+  }
+  let active = 0, bx0 = cols, bx1 = -1, by0 = rows, by1 = -1;
+  for (let k = 0; k < N; k++) {
+    if (camBlock[k] || freq[k] < REACT_ACTIVE_FREQ) continue;
+    active++;
+    const q = k % cols, r = Math.floor(k / cols);
+    bx0 = Math.min(bx0, q); bx1 = Math.max(bx1, q); by0 = Math.min(by0, r); by1 = Math.max(by1, r);
+  }
+  const activeShare = active / N;
+  if (activeShare < REACT_MIN_ACTIVE) {
+    return quiet(`only ${(activeShare * 100).toFixed(0)}% of the picture around ${cams.length} still reactor(s) changes`);
+  }
+  const fill = active / ((bx1 - bx0 + 1) * (by1 - by0 + 1));
+  if (fill < REACT_MIN_FILL) {
+    return quiet(`the changing picture is scattered (${(fill * 100).toFixed(0)}% of its box), not a window`);
+  }
+  const box = {
+    x: evenClamped((bx0 / cols) * srcW, 0, srcW - 2),
+    y: evenClamped((by0 / rows) * srcH, 0, srcH - 2),
+    w: 0, h: 0,
+  };
+  box.w = evenClamped(((bx1 + 1) / cols) * srcW - box.x, 2, srcW - box.x);
+  box.h = evenClamped(((by1 + 1) / rows) * srcH - box.y, 2, srcH - box.y);
+
+  // ── The reactor crops ──
+  const n = cams.length;
+  const cells = layoutCells([n], OUTPUT_W, OUTPUT_H / 2);
+  const aspect = cells[0].w / cells[0].h;
+  const faceHPx = median(cams.map((c) => c.h)) * srcH;
+  let boxH = Math.max(faceHPx / REACT_FACE_TARGET_H, cells[0].h / REACT_MAX_UPSCALE);
+  // Two reactors side by side must not share pixels: cap the width at the gap.
+  if (n === 2) boxH = Math.min(boxH, ((cams[1].cx - cams[0].cx) * srcW) / aspect);
+  // Nor may a reactor's crop reach into the show, which has its own half: the
+  // span each reactor may use stops at the show's near edge.
+  const span = cams.map((c) => {
+    const px = c.cx * srcW;
+    if (px < box.x) return { lo: 0, hi: box.x };
+    if (px > box.x + box.w) return { lo: box.x + box.w, hi: srcW };
+    return { lo: 0, hi: srcW };
+  });
+  boxH = Math.min(boxH, ...span.map((z) => (z.hi - z.lo) / aspect));
+  boxH = evenClamped(Math.min(boxH, srcH, srcW / aspect), 2, srcH);
+  const boxW = evenClamped(boxH * aspect, 2, srcW);
+  const crops = cams.map((c, k) => ({
+    x: evenClamped(c.cx * srcW - boxW / 2, span[k].lo, Math.max(span[k].lo, span[k].hi - boxW)),
+    y: evenClamped(c.cy * srcH - MULTI_UP_FACE_IN_BOX * boxH, 0, srcH - boxH),
+  }));
+
+  // ── When ──
+  // Wherever a reactor is seen, bridged across short misses; a reactor who
+  // cuts to a full-screen camera leaves their spot, and that stretch goes to
+  // the single-speaker camera like any other shot.
+  const sampleDur = 1 / probeFps;
+  const runs: { from: number; to: number }[] = [];
+  for (let i = 0; i < frames; i++) {
+    if (!cams.some((c) => c.seen.has(i))) continue;
+    const prev = runs[runs.length - 1];
+    if (prev && (i - prev.to - 1) * sampleDur <= REACT_GAP_BRIDGE_S) prev.to = i;
+    else runs.push({ from: i, to: i });
+  }
+  const whole = runs.length === 1 && runs[0].from === 0 && runs[0].to === frames - 1;
+  const ranges: TimeRange[] = runs
+    .map((r) => ({
+      start: r.from * sampleDur,
+      end: r.to === frames - 1 ? clipDur : r.to * sampleDur,
+      slots: n,
+      seamY: 0.5,
+    }))
+    .filter((r) => r.end - r.start >= MULTI_UP_MIN_RUN_S);
+  if (totalSecs(ranges) < MULTI_UP_MIN_TOTAL_S) return quiet("the reactor is not on screen long enough");
+
+  // The halves keep the source's vertical order; a tie goes to the show on top.
+  const at: "top" | "bottom" = (box.y + box.h / 2) / srcH <= median(cams.map((c) => c.cy)) ? "top" : "bottom";
+  const coverage = Math.min(1, totalSecs(ranges) / Math.max(clipDur, 1e-9));
+  console.log(
+    `[facetrack] Reaction, show in a window: ${n} reactor(s) at ` +
+    cams.map((c) => `(${c.cx.toFixed(2)},${c.cy.toFixed(2)})`).join(" ") +
+    `, show ${box.w}×${box.h} at (${box.x},${box.y}) — ${(activeShare * 100).toFixed(0)}% of the frame, ` +
+    `${(fill * 100).toFixed(0)}% of its box — on the ${at}; ${boxW}×${boxH} reactor crops, ` +
+    `${(coverage * 100).toFixed(0)}% of ${clipDur.toFixed(1)}s.`
+  );
+  return {
+    kind: "window",
+    plan: {
+      layouts: [{ slots: n, axis: "x", boxW, boxH, crops, rows: [n], ranges, reaction: { box, at } }],
+      slots: n,
+      coverage,
+      whole,
+    },
+  };
+}
 
 /**
  * The better of two plans for the same clip, either of which may be null.
@@ -2566,46 +3174,81 @@ export function multiUpFilterComplex(
   // the base picture the stacks are switched on top of. They all read the same
   // input at the same instant — a stack is a crop of the frame that is already
   // on screen — so one `split` feeds the lot.
-  const slotCount = layouts.reduce((a, l) => a + l.crops.length, 0);
+  // A reaction layout takes one more copy, for its content panel.
+  const slotCount = layouts.reduce((a, l) => a + l.crops.length + (l.reaction ? 1 : 0), 0);
   const slotLabels: string[] = [];
-  layouts.forEach((l, li) => l.crops.forEach((_, i) => slotLabels.push(`[s${li}_${i}]`)));
+  layouts.forEach((l, li) => {
+    l.crops.forEach((_, i) => slotLabels.push(`[s${li}_${i}]`));
+    if (l.reaction) slotLabels.push(`[s${li}_content]`);
+  });
 
   const parts = composited
     ? [`[0:v]setpts=PTS-STARTPTS,split=${slotCount + 1}[base]${slotLabels.join("")}`, ...baseParts!]
     : [`[0:v]setpts=PTS-STARTPTS,split=${slotCount}${slotLabels.join("")}`];
 
   layouts.forEach((layout, li) => {
-    const { cols, rows, slotW, slotH } = slotGeometry(layout.slots);
+    const stackOut = composited ? `[stack${li}]` : "[outv]";
+    const rows = layout.rows ?? rowsFor(layout.slots);
+    // A reaction's speakers fill one HALF of the frame; the content is the other.
+    const cells = layout.reaction
+      ? layoutCells(rows, OUTPUT_W, OUTPUT_H / 2)
+      : layoutCells(rows);
 
     // setsar=1 after each scale: the crops are not square-pixel by construction,
     // and hstack/vstack refuse to join inputs whose sample aspect ratios disagree.
     // One plain crop-and-scale per slot — the crop is already the slot's shape,
     // so it fills it exactly and there is nothing to pad, letterbox or blur.
     layout.crops.forEach((c, i) => {
+      const size = layout.sizes?.[i] ?? { w: layout.boxW, h: layout.boxH };
       parts.push(
-        `[s${li}_${i}]crop=${layout.boxW}:${layout.boxH}:${c.x}:${c.y},` +
-          `scale=${slotW}:${slotH}:flags=lanczos,setsar=1[c${li}_${i}]`
+        `[s${li}_${i}]crop=${size.w}:${size.h}:${c.x}:${c.y},` +
+          `scale=${cells[i].w}:${cells[i].h}:flags=lanczos,setsar=1[c${li}_${i}]`
       );
     });
 
-    // Rows first, then the rows on top of each other. A 1-column grid skips the
-    // hstack and vstacks the cells directly, which is byte-identical to the graph
-    // the two-speaker stack has always emitted.
-    const stackOut = composited ? `[stack${li}]` : "[outv]";
+    // Rows first, then the rows on top of each other. A one-cell row skips the
+    // hstack and goes into the vstack directly, which is byte-identical to the
+    // graph the two-speaker stack has always emitted.
     const rowLabels: string[] = [];
-    for (let r = 0; r < rows; r++) {
-      const cells = Array.from({ length: cols }, (_, c) => `[c${li}_${r * cols + c}]`).join("");
-      if (cols === 1) { rowLabels.push(cells); continue; }
-      parts.push(`${cells}hstack=inputs=${cols},setsar=1[r${li}_${r}]`);
+    let k = 0;
+    rows.forEach((n, r) => {
+      const rowCells = Array.from({ length: n }, (_, c) => `[c${li}_${k + c}]`).join("");
+      k += n;
+      if (n === 1) { rowLabels.push(rowCells); return; }
+      parts.push(`${rowCells}hstack=inputs=${n},setsar=1[r${li}_${r}]`);
       rowLabels.push(`[r${li}_${r}]`);
+    });
+
+    if (layout.reaction) {
+      // The speakers' half: one row, or already a single cell.
+      const speakers = rowLabels.length === 1 ? rowLabels[0] : null;
+      if (!speakers) throw new Error("multiUpFilterComplex: a reaction's speakers must be one row");
+      const { box, at } = layout.reaction;
+      // The content, whole, fitted into its half over a blurred fill of itself —
+      // the same treatment as the full-frame blurred-background fallback, one
+      // half the height. Fitting rather than filling is the point: a crop that
+      // filled 1080x960 from a 16:9 picture would throw away 40% of it, and the
+      // content is what the viewer came for.
+      parts.push(
+        `[s${li}_content]crop=${box.w}:${box.h}:${box.x}:${box.y},split=2[cb${li}][cf${li}]`,
+        `[cb${li}]scale=${OUTPUT_W}:${OUTPUT_H / 2}:force_original_aspect_ratio=increase,` +
+          `crop=${OUTPUT_W}:${OUTPUT_H / 2},boxblur=20:6[cbl${li}]`,
+        `[cf${li}]scale=${OUTPUT_W}:${OUTPUT_H / 2}:force_original_aspect_ratio=decrease:` +
+          `force_divisible_by=2:flags=lanczos[cfs${li}]`,
+        `[cbl${li}][cfs${li}]overlay=(W-w)/2:(H-h)/2,setsar=1[content${li}]`
+      );
+      const halves = at === "top" ? `[content${li}]${speakers}` : `${speakers}[content${li}]`;
+      parts.push(`${halves}vstack=inputs=2` + (composited ? `,setsar=1[stack${li}]` : "[outv]"));
+      return;
     }
-    if (rows === 1) {
+
+    if (rowLabels.length === 1) {
       // Cannot happen with MULTI_UP_MIN_SLOTS = 2, but a single-row grid would
       // otherwise emit a vstack with one input, which ffmpeg rejects.
       parts.push(`${rowLabels[0]}null${stackOut}`);
     } else {
       parts.push(
-        `${rowLabels.join("")}vstack=inputs=${rows}` +
+        `${rowLabels.join("")}vstack=inputs=${rowLabels.length}` +
         (composited ? `,setsar=1[stack${li}]` : "[outv]")
       );
     }
@@ -2674,9 +3317,15 @@ export async function detectFacesCropData(
   let multiUp: MultiUpPlan | null = null;
   /** Set only when the probe could not RUN — see isProbeUnavailable. */
   let multiUpUnavailable: string | undefined;
+  let reaction: ReactionResult | null = null;
   try {
-    const { perFrame, probeFps } = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH);
-    multiUp = planMultiUp(perFrame, srcW, srcH, probeFps, clipDur);
+    const { perFrame, probeFps, pixels } = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH);
+    // A reaction video first: its webcams would otherwise read as a two-shot (or,
+    // with a face in the show, a three-shot) and the show itself would be lost.
+    reaction = planReaction(perFrame, srcW, srcH, probeFps, clipDur, pixels);
+    multiUp = reaction?.kind === "window"
+      ? reaction.plan
+      : reaction ? null : planMultiUp(perFrame, srcW, srcH, probeFps, clipDur, pixels);
 
     // ── Second pass, for clips the whole-frame probe read poorly ──
     //
@@ -2696,15 +3345,28 @@ export async function detectFacesCropData(
     // the common case, and the one that is already right — never pays for this.
     // When it does run it costs one more ffmpeg pipe and about 4x the detection
     // of a single pass, so it is worth being strict about when.
-    if (!multiUp || multiUp.coverage < MULTI_UP_RESLICE_COVERAGE) {
+    if (reaction) {
+      // Settled: the slices look for more PEOPLE, and a reaction is not about them.
+    } else if (!multiUp || multiUp.coverage < MULTI_UP_RESLICE_COVERAGE) {
       console.log(
         `[facetrack] Whole-frame probe gave ` +
         (multiUp ? `only ${(multiUp.coverage * 100).toFixed(0)}% coverage` : "no stack") +
         ` — re-probing in ${PROBE_SLICES} slices.`
       );
       const sliced = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, PROBE_SLICES);
-      const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur);
+      const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels);
       multiUp = betterPlan(multiUp, slicedPlan);
+    } else if (mayBeMissingAGrid(multiUp, perFrame)) {
+      // Only a GRID may replace the whole-frame plan here. It already covers
+      // most of the clip, so anything short of the 2x2 this pass is looking
+      // for is no better than what we have.
+      console.log(
+        `[facetrack] Whole-frame ${multiUp.slots}-up may be a partly seen 2x2 — ` +
+        `re-probing in ${PROBE_SLICES} slices.`
+      );
+      const sliced = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, PROBE_SLICES);
+      const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels);
+      if (slicedPlan?.layouts[0]?.axis === "grid") multiUp = betterPlan(multiUp, slicedPlan);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message.split("\n")[0] : String(err);
@@ -2728,6 +3390,21 @@ export async function detectFacesCropData(
     }
   }
 
+  if (reaction?.kind === "fullFrame") {
+    // The show fills the frame and the reactors are overlays inside it, so the
+    // whole picture, fitted over its own blur, is the answer — see planReaction.
+    // No camera: a 9:16 window of a show crops out the show, and it follows
+    // whichever face BlazeFace likes, which is as often a character as a reactor.
+    return {
+      srcW, srcH, fps, hasAudio,
+      clipStart: start, clipEnd: end,
+      cropW, cropH, rawCropW,
+      isBlurBg: true,
+      filterComplex: [...blurBgParts("0:v", "outv"), ...(hasAudio ? [`[0:a]asetpts=PTS-STARTPTS[outa]`] : [])].join(";"),
+      ...multiUpFields(null, multiUpUnavailable),
+    };
+  }
+
   if (multiUp?.whole) {
     // `whole` is only ever set on a one-layout plan — a stack that never cuts
     // away has nothing to cut to — so this path still reads the single layout.
@@ -2745,7 +3422,10 @@ export async function detectFacesCropData(
       isBlurBg: false,
       speakerLayout: "split",
       speakerSlots: only.slots,
-      stackedRanges: [{ start: 0, end: clipDur, slots: only.slots }],
+      stackedRanges: [{
+        start: 0, end: clipDur, slots: only.slots,
+        ...(only.ranges[0]?.seamY !== undefined ? { seamY: only.ranges[0].seamY } : {}),
+      }],
       filterComplex: multiUpFilterComplex(multiUp, hasAudio),
       // Deliberately omitted. faceFocusY answers "which slice of this clip
       // holds the face" — a question with no answer for a stack, where every
