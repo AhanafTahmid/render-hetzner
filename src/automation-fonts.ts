@@ -1,4 +1,4 @@
-// Montserrat for mcp-web's promo composition (src/mcp-web/). The dashboard
+// Montserrat for Automation's promo composition (src/automation/). The dashboard
 // preview loads the same @fontsource files, so text wraps identically.
 import "@fontsource/montserrat/400.css";
 import "@fontsource/montserrat/500.css";
