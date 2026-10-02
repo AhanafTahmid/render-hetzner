@@ -38,6 +38,7 @@ const require = createRequire(import.meta.url);
 import path from "path";
 import fs from "fs";
 import { execSync, spawn } from "child_process";
+import { randomUUID } from "crypto";
 import { describeExit, MemoryBudgetError, preferOomKill, watchRss } from "./oomVictim.ts";
 
 // Node 23+ removed the long-deprecated util.isNullOrUndefined, which
@@ -726,6 +727,49 @@ function spawnFfmpegAsync(ffmpeg: string, args: string[]): Promise<void> {
       else reject(new Error(`ffmpeg ${describeExit(code, signal)}`));
     });
     proc.on("error", reject);
+  });
+}
+
+/**
+ * Decode the finished crop end to end before it is uploaded.
+ *
+ * ffmpeg exiting 0 does not mean the file plays. On 2026-10-02 two workers
+ * started in the same millisecond and encoded into the same temp path; one
+ * deleted it under the other, and the survivor uploaded an MP4 whose header was
+ * fine and whose frames were someone else's bytes — 0 decodable frames. Every
+ * render of that clip then failed with Remotion's "No frame found at position".
+ * A few seconds of decode here turns that into a failed crop, which the app
+ * resubmits, instead of a clip that can never render.
+ */
+function assertDecodableClip(ffmpeg: string, file: string, label: string): Promise<void> {
+  const info = probeVideo(file);
+  const expected = Math.floor(info.duration * info.fps * 0.9);
+  return new Promise((resolve, reject) => {
+    const proc = spawn(
+      ffmpeg,
+      ["-v", "error", "-nostats", "-threads", "2", "-i", file, "-map", "0:v:0", "-f", "null", "-progress", "pipe:1", "-"],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+    let out = "";
+    let errLines = 0;
+    let firstErr = "";
+    proc.stdout.on("data", (d) => { out = (out + d.toString()).slice(-4096); });
+    proc.stderr.on("data", (d) => {
+      for (const line of d.toString().split("\n")) {
+        if (!line.trim()) continue;
+        if (!firstErr) firstErr = line.trim();
+        errLines++;
+      }
+    });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      const frames = Number([...out.matchAll(/frame=(\d+)/g)].at(-1)?.[1] ?? 0);
+      if (code === 0 && frames >= expected && errLines <= 20) return resolve();
+      reject(new Error(
+        `Encoded crop is not playable (${label}): decoded ${frames}/${expected} frames, ` +
+        `${errLines} decode errors${firstErr ? ` — first: ${firstErr}` : ""}`
+      ));
+    });
   });
 }
 
@@ -3954,8 +3998,12 @@ export async function cropShortWithFaceTracking(
 
   const tmpDir     = "/tmp";
   const ownedInput = !localVideoPath;
-  const inputPath  = localVideoPath ?? path.join(tmpDir, `facetrack-input-${Date.now()}.mp4`);
-  const outputPath = path.join(tmpDir, `facetrack-output-${Date.now()}.mp4`);
+  // Unique per job, not per millisecond: the render box runs 8 crop workers,
+  // and two that started in the same ms encoded into ONE file — see
+  // assertDecodableClip.
+  const tmpId      = randomUUID();
+  const inputPath  = localVideoPath ?? path.join(tmpDir, `facetrack-input-${tmpId}.mp4`);
+  const outputPath = path.join(tmpDir, `facetrack-output-${tmpId}.mp4`);
   const label      = outputR2Key;
 
   try {
@@ -3971,6 +4019,8 @@ export async function cropShortWithFaceTracking(
 
     const { faceFocusY, tracked, speakerLayout, speakerSlots, stackedRanges, multiUpError } =
       await cropVideoSegment(inputPath, outputPath, startTime, endTime, label);
+
+    await assertDecodableClip(ffmpegBin(), outputPath, label);
 
     // Streamed from disk rather than read into a Buffer: an encoded clip is
     // tens of megabytes, and holding that in the heap alongside TensorFlow on a
