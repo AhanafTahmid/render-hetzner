@@ -215,6 +215,11 @@ export const clipText = (p: Pick<PromoProps, "videoScript">, i: number) => {
 };
 
 export const HOOK_TRACK_ID = "track-2";
+/** The end card's animations (template "logoAnimation" → imageEffects id, drawn by PromoVideo's LogoCard). */
+export const LOGO_ANIMATIONS = { shake: "logo-shake", pop: "logo-pop", zoom: "logo-zoom" } as const;
+export type LogoAnimation = keyof typeof LOGO_ANIMATIONS | "none";
+const LOGO_EFFECT_IDS: string[] = Object.values(LOGO_ANIMATIONS);
+export const isLogoEffect = (id: string | undefined) => !!id && LOGO_EFFECT_IDS.includes(id);
 export type ExtraClip = z.infer<typeof extraClipSchema>;
 
 /** The hook's text clip, wherever it was dragged to. */
