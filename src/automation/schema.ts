@@ -102,6 +102,8 @@ export const extraClipSchema = z
     role: z.string().optional(),
     /** Text clips: where the text's middle sits, as a fraction of the frame height (0 top, 1 bottom). Absent = above the band. */
     textY: z.number().min(0).max(1).optional(),
+    /** Text clips: kept on the timeline (and its text kept) but not drawn. */
+    hidden: z.boolean().optional(),
     name: z.string().default(""),
     startFrame: z.number(),
     durationFrames: z.number(),
