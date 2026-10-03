@@ -38,7 +38,7 @@ export function PromoVideo(props: PromoProps) {
           ? track.clips.map((clip) => (
               <Sequence key={clip.id} from={Math.round(clip.startFrame ?? 0)} durationInFrames={Math.max(1, Math.round(clip.durationFrames ?? 30))}>
                 {clip.type === "text" ? (
-                  clip.hidden ? null : <TextClipLayer text={clip.text ?? ""} layout={clip.role === "cta" ? ctaLayout(props, pieces, clip.startFrame ?? 0) : props.layout} width={width} height={height} y={clip.textY} bg={clip.textBg ? withAlpha(clip.textBg, clip.textBgOpacity ?? 1) : undefined} />
+                  clip.hidden ? null : <TextClipLayer text={clip.text ?? ""} layout={withTextColor(clip.role === "cta" ? ctaLayout(props, pieces, clip.startFrame ?? 0) : props.layout, clip.textColor)} width={width} height={height} y={clip.textY} bg={clip.textBg ? withAlpha(clip.textBg, clip.textBgOpacity ?? 1) : undefined} />
                 ) : (
                   <ExtraClipLayer clip={clip} muted={track.muted === true} />
                 )}
@@ -151,6 +151,8 @@ export function withAlpha(hex: string, a: number) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a.toFixed(3)})`;
 }
+
+const withTextColor = (layout: Layout, color: string | undefined): Layout => (color ? { ...layout, textColor: color } : layout);
 
 /** The CTA sits where the clip under it puts text: above a band, or near the top of a phone recording that fills the frame. */
 function ctaLayout(props: PromoProps, pieces: Piece[], startFrame: number): Layout {

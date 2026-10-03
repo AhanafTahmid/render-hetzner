@@ -107,6 +107,8 @@ export const extraClipSchema = z
     /** Text clips: a box behind each line of text, in this color ("#000000") at textBgOpacity (default 1). Absent = no box. */
     textBg: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
     textBgOpacity: z.number().min(0).max(1).optional(),
+    /** Text clips: this clip's text color ("#000000"), e.g. dark text on a white box. Absent = the layout's textColor. */
+    textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
     name: z.string().default(""),
     startFrame: z.number(),
     durationFrames: z.number(),
