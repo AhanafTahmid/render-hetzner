@@ -104,6 +104,9 @@ export const extraClipSchema = z
     textY: z.number().min(0).max(1).optional(),
     /** Text clips: kept on the timeline (and its text kept) but not drawn. */
     hidden: z.boolean().optional(),
+    /** Text clips: a box behind each line of text, in this color ("#000000") at textBgOpacity (default 1). Absent = no box. */
+    textBg: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+    textBgOpacity: z.number().min(0).max(1).optional(),
     name: z.string().default(""),
     startFrame: z.number(),
     durationFrames: z.number(),

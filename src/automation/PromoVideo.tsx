@@ -38,7 +38,7 @@ export function PromoVideo(props: PromoProps) {
           ? track.clips.map((clip) => (
               <Sequence key={clip.id} from={Math.round(clip.startFrame ?? 0)} durationInFrames={Math.max(1, Math.round(clip.durationFrames ?? 30))}>
                 {clip.type === "text" ? (
-                  clip.hidden ? null : <TextClipLayer text={clip.text ?? ""} layout={clip.role === "cta" ? ctaLayout(props, pieces, clip.startFrame ?? 0) : props.layout} width={width} height={height} y={clip.textY} />
+                  clip.hidden ? null : <TextClipLayer text={clip.text ?? ""} layout={clip.role === "cta" ? ctaLayout(props, pieces, clip.startFrame ?? 0) : props.layout} width={width} height={height} y={clip.textY} bg={clip.textBg ? withAlpha(clip.textBg, clip.textBgOpacity ?? 1) : undefined} />
                 ) : (
                   <ExtraClipLayer clip={clip} muted={track.muted === true} />
                 )}
@@ -147,7 +147,7 @@ function LogoCard({ effect, url, layout, width, height, durF }: { effect: string
 }
 
 /** "#ff6b00", 0.4 → "rgba(255,107,0,0.4)" */
-function withAlpha(hex: string, a: number) {
+export function withAlpha(hex: string, a: number) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a.toFixed(3)})`;
 }
@@ -162,18 +162,19 @@ function ctaLayout(props: PromoProps, pieces: Piece[], startFrame: number): Layo
  * Text above the band (on top of the clip when it fills the frame): a clip's own text or a text clip.
  * `y` (a text clip's textY) puts the text's middle at that fraction of the height instead, over the video.
  */
-function TextClipLayer({ text, layout, width, height, y }: { text: string; layout: Layout; width: number; height: number; y?: number }) {
+function TextClipLayer({ text, layout, width, height, y, bg }: { text: string; layout: Layout; width: number; height: number; y?: number; bg?: string }) {
   if (!text.trim()) return null;
   const band = bandBox(layout, width, height);
   const place: CSSProperties = y !== undefined ? { top: Math.round(height * y), transform: "translateY(-50%)" } : band.full ? { top: Math.round(height * 0.12) } : { bottom: height - band.top + layout.textGap };
   return (
     <div style={{ position: "absolute", left: 0, width, padding: "0 28px", boxSizing: "border-box", display: "flex", justifyContent: "center", ...place }}>
-      <RichText text={text} layout={layout} shadow={band.full || y !== undefined} />
+      <RichText text={text} layout={layout} shadow={!bg && (band.full || y !== undefined)} bg={bg} />
     </div>
   );
 }
 
-export function RichText({ text, layout, shadow = false, inline = false }: { text: string; layout: Layout; shadow?: boolean; inline?: boolean }) {
+/** `bg` (a CSS color) draws a rounded box behind each line, TikTok-style. */
+export function RichText({ text, layout, shadow = false, inline = false, bg }: { text: string; layout: Layout; shadow?: boolean; inline?: boolean; bg?: string }) {
   const css: CSSProperties = {
     fontFamily: `${layout.fontFamily}, 'Helvetica Neue', Arial, sans-serif`,
     fontSize: layout.fontSize,
@@ -186,6 +187,15 @@ export function RichText({ text, layout, shadow = false, inline = false }: { tex
     textShadow: shadow ? "0 4px 18px rgba(0,0,0,0.85)" : undefined,
   };
   const parts = parseAccent(text).map((p, i) => (p.accent ? <span key={i} style={{ color: layout.accentColor, fontWeight: Math.max(layout.fontWeight, 600) }}>{p.text}</span> : <span key={i}>{p.text}</span>));
+  if (bg) {
+    // One inline box that breaks with the text, so every line gets its own padded, rounded box.
+    const box: CSSProperties = { background: bg, padding: "0.06em 0.32em", borderRadius: "0.22em", boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" };
+    return (
+      <div style={{ ...css, lineHeight: 1.42 }}>
+        <span style={box}>{parts}</span>
+      </div>
+    );
+  }
   return inline ? <span style={css}>{parts}</span> : <div style={css}>{parts}</div>;
 }
 
