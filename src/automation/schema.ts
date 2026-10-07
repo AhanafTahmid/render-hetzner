@@ -62,6 +62,9 @@ export const layoutSchema = z.object({
   textGap: z.number().min(0).max(400).catch(56).default(56),
   watermarkText: z.string().max(40).catch("ShortsHero.com").default("ShortsHero.com"),
   showWatermark: z.boolean().catch(true).default(true),
+  /** Where the watermark's middle sits, as fractions of the frame. null = automatic: right-aligned under the band. */
+  watermarkX: z.number().min(0).max(1).nullable().catch(null).default(null),
+  watermarkY: z.number().min(0).max(1).nullable().catch(null).default(null),
   /** Fade the last clip (the logo) to black over its final 0.6 s. */
   fadeOutEnd: z.boolean().catch(true).default(true),
 });

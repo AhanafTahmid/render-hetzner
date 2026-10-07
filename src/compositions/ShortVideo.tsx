@@ -11,6 +11,7 @@
 import React from "react";
 import {
   AbsoluteFill,
+  Audio,
   Img,
   OffthreadVideo,
   Sequence,
@@ -297,6 +298,201 @@ const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   layout: "inline",
 };
 
+// ── Template look ─────────────────────────────────────────────────────────────
+/**
+ * How a clip made from a /dashboard/templates template is framed and dressed.
+ *
+ * Absent on every ordinary short, and every branch below is a no-op without it,
+ * so a clip that never went through a template renders exactly what it always
+ * did. The four templates that fill this in live in lib/shortTemplates.ts; the
+ * shape is declared HERE because this file is what the render server receives
+ * (scripts/sync-render-composition.mjs), and it cannot import from lib/.
+ *
+ * Every length is a fraction of the frame, never px, for the same reason the
+ * hook title's are: this draws into a 1080×1920 export and a ~300px preview.
+ */
+export interface TemplateLook {
+  /** fill = the whole frame (the default); fit = a full-width band; card = a rounded inset card. */
+  frame?: "fill" | "fit" | "card";
+  /** Top of the video box and its height, as fractions of the frame height (fit/card). */
+  boxTop?: number;
+  boxHeight?: number;
+  /** Side margin of a card, as a fraction of the frame width. */
+  boxInsetX?: number;
+  /** Corner radius of a card, as a fraction of the frame width. */
+  radius?: number;
+  /** What shows around the box. */
+  background?: string;
+  /** Colour grade on the video only — never on the text drawn over it. */
+  grade?: "none" | "warm" | "cinematic" | "punchy";
+  /** Darkened corners, 0..1. */
+  vignette?: number;
+  /** Seconds of fade up from black at the start. */
+  fadeIn?: number;
+  /** A line of text that stays on screen for the whole clip. */
+  title?: {
+    text: string;
+    /** plain = white text on the background; bar = black text on a full-width white band. */
+    style: "plain" | "bar";
+    /** Words drawn in `accentColor` — matched case-insensitively, punctuation ignored. */
+    accent?: string[];
+    accentColor?: string;
+    /** Vertical centre, as a fraction of the frame height. */
+    top?: number;
+  };
+  /**
+   * Emoji moments, in seconds from the start of the clip. A `flash` blacks out
+   * the video and fills the middle with the emoji (the title stays up); a `pop`
+   * bounces the emoji in below the captions and nudges the picture in.
+   */
+  pops?: { at: number; emoji: string; mode: "flash" | "pop"; dur?: number; sfx?: string; sfxVolume?: number }[];
+  /**
+   * One-shot sounds, in seconds of the clip — a lead-in sting under an intro,
+   * say. A pop's own `sfx` is the other way to place a sound.
+   */
+  sounds?: { at: number; url: string; volume?: number }[];
+  /** Seconds before the background music comes in (it plays from its best part either way). */
+  musicAt?: number;
+  /**
+   * Music level while somebody is speaking, as a fraction of `musicVolume`.
+   * Speech is read off the caption word timings; the level eases over ~0.4 s
+   * either side so it breathes rather than pumps.
+   */
+  duck?: number;
+  /** Where a pop sits, as a fraction of the frame height. */
+  popTop?: number;
+  /** Active-word colours, one per caption group in turn. */
+  captionColors?: string[];
+}
+
+const GRADE_FILTERS: Record<string, string | undefined> = {
+  warm: "sepia(0.22) saturate(1.4) hue-rotate(-10deg) contrast(1.08)",
+  cinematic: "contrast(1.1) saturate(0.82) brightness(0.9)",
+  punchy: "contrast(1.12) saturate(1.22)",
+};
+
+/** Read a look off inputProps, where it may arrive as a JSON string. */
+function parseTemplateLook(raw: unknown): TemplateLook | null {
+  const v = typeof raw === "string" ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
+  return v && typeof v === "object" ? (v as TemplateLook) : null;
+}
+
+/** The box the main video draws into, or null for the ordinary full frame. */
+function templateBox(look: TemplateLook | null, frameWidth: number): React.CSSProperties | null {
+  if (!look || !look.frame || look.frame === "fill") return null;
+  const top = look.boxTop ?? 0.25;
+  const h = look.boxHeight ?? 0.5;
+  const inset = look.frame === "card" ? look.boxInsetX ?? 0.03 : 0;
+  return {
+    position: "absolute",
+    top: `${top * 100}%`,
+    height: `${h * 100}%`,
+    left: `${inset * 100}%`,
+    right: `${inset * 100}%`,
+    overflow: "hidden",
+    borderRadius: look.frame === "card" ? (look.radius ?? 0.06) * frameWidth : undefined,
+  };
+}
+
+/** Is a pop of this mode on screen at `t`, and how far through it are we (0..1)? */
+function activePop(look: TemplateLook | null, t: number, mode: "flash" | "pop") {
+  for (const p of look?.pops ?? []) {
+    const dur = p.dur ?? (mode === "flash" ? 0.6 : 1.1);
+    if (p.mode === mode && t >= p.at && t < p.at + dur) return { pop: p, k: (t - p.at) / dur };
+  }
+  return null;
+}
+
+/**
+ * The timeline frame that shows clip second `clipSec`, or null when that moment
+ * has been cut out in the editor. The inverse of clipTimeAt, for placing a
+ * sound on the frame its picture lands on.
+ */
+function timelineFrameAt(
+  placed: { from: number; durF: number; clipFrom: number }[],
+  clipSec: number,
+  fps: number
+): number | null {
+  const f = Math.round(clipSec * fps);
+  for (const p of placed) {
+    if (f >= p.clipFrom && f < p.clipFrom + p.durF) return p.from + (f - p.clipFrom);
+  }
+  return null;
+}
+
+/**
+ * Spoken stretches, from caption words: neighbouring words closer than 0.6 s
+ * merge into one stretch, so the music does not bob up between words.
+ */
+function speechSpans(words: { start: number; end: number }[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const w of [...words].sort((a, b) => a.start - b.start)) {
+    const last = out[out.length - 1];
+    if (last && w.start - last[1] < 0.6) last[1] = Math.max(last[1], w.end);
+    else out.push([w.start, w.end]);
+  }
+  return out;
+}
+
+/** 1 away from speech, `duck` inside it, eased over `ease` seconds at each edge. */
+function duckAt(spans: [number, number][], t: number, duck: number, ease = 0.4): number {
+  let d = Infinity;
+  for (const [a, b] of spans) {
+    if (t >= a && t <= b) return duck;
+    d = Math.min(d, t < a ? a - t : t - b);
+  }
+  return d >= ease ? 1 : duck + (1 - duck) * (d / ease);
+}
+
+function TemplateTitle({ title }: { title: NonNullable<TemplateLook["title"]> }) {
+  const { width, height } = useVideoConfig();
+  const bar = title.style === "bar";
+  // Plain: the size the reference's "Rohan Joshi Core ☠️" is drawn at (~1.6x
+  // the first cut of this, measured against the reference frame).
+  const fontSize = width * (bar ? 0.05 : 0.066);
+  // An entry may be a phrase ("Elon Musk"); every word of it is coloured.
+  const accent = new Set(
+    (title.accent ?? []).flatMap((a) => String(a).split(/\s+/)).map((w) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "")).filter(Boolean)
+  );
+  const words = title.text.split(/(\s+)/);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: 0,
+        right: 0,
+        top: height * (title.top ?? 0.08),
+        transform: "translateY(-50%)",
+        display: "flex",
+        justifyContent: "center",
+        pointerEvents: "none",
+        ...(bar ? { backgroundColor: "#ffffff", padding: `${fontSize * 0.45}px ${width * 0.05}px` } : { padding: `0 ${width * 0.06}px` }),
+      }}
+    >
+      <p
+        style={{
+          margin: 0,
+          textAlign: "center",
+          fontFamily: `"Inter", system-ui, -apple-system, sans-serif`,
+          fontWeight: bar ? 900 : 500,
+          fontSize,
+          lineHeight: 1.18,
+          color: bar ? "#0a0a0a" : "#ffffff",
+          textShadow: bar ? undefined : `0 ${fontSize * 0.04}px ${fontSize * 0.2}px rgba(0,0,0,0.6)`,
+        }}
+      >
+        {words.map((w, i) =>
+          accent.has(w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "")) ? (
+            <span key={i} style={{ color: title.accentColor ?? "#d71920" }}>{w}</span>
+          ) : (
+            <React.Fragment key={i}>{w}</React.Fragment>
+          )
+        )}
+      </p>
+    </div>
+  );
+}
+
 // ── Extra track clip renderer ─────────────────────────────────────────────────
 function ExtraClipLayer({ clip }: { clip: any }) {
   const frame = useCurrentFrame();
@@ -480,9 +676,14 @@ export const ShortComposition = ({
   hookColor,
   hookDuration,
   sourceOffset,
+  templateLook,
+  musicUrl,
+  musicVolume,
+  musicStartSec,
 }: any) => {
-  const { fps } = useVideoConfig();
+  const { fps, width: frameWidth } = useVideoConfig();
   const frame = useCurrentFrame();
+  const look = parseTemplateLook(templateLook);
 
   // Ensure numeric types (Lambda passes them as strings sometimes)
   const st = Number(startTime ?? 0);
@@ -568,6 +769,7 @@ export const ShortComposition = ({
   const batchSize = (style as CaptionStyle).wordsPerBatch || 3;
 
   let activeGroup: { words: any[]; start: number; end: number } | null = null;
+  let activeGroupIndex = -1;
   if (captions) {
     let parsedCaptions = captions;
     if (typeof captions === "string") {
@@ -582,8 +784,15 @@ export const ShortComposition = ({
       if (!chunk[0]) continue;
       groups.push({ words: chunk, start: chunk[0].start, end: chunk[chunk.length - 1].end });
     }
-    activeGroup = groups.find((g) => currentTime >= g.start && currentTime <= g.end) || null;
+    activeGroupIndex = groups.findIndex((g) => currentTime >= g.start && currentTime <= g.end);
+    activeGroup = groups[activeGroupIndex] ?? null;
   }
+  // A template can cycle the active-word colour group by group, the way the
+  // "aura" edits colour one word green, the next yellow, the next blue.
+  const groupStyle =
+    look?.captionColors?.length && activeGroupIndex >= 0
+      ? { ...style, color: look.captionColors[activeGroupIndex % look.captionColors.length] }
+      : style;
 
   // Parse extra tracks (may arrive as JSON string from Lambda inputProps)
   const parsedExtraTracks: any[] = (() => {
@@ -676,27 +885,61 @@ export const ShortComposition = ({
   const captionSeam =
     hookOnScreen && hookSeam !== null && rawCaptionSeam === hookSeam ? false : rawCaptionSeam;
 
+  // ── Template look ──────────────────────────────────────────────────────────
+  // All of it is null/1 on an ordinary short. Pops are keyed to the UNCUT
+  // clip's clock, so cutting a piece out in the editor keeps each one on its
+  // moment rather than sliding it onto a different line.
+  const tplBox = templateBox(look, frameWidth);
+  const musicFrom = Math.max(0, Math.min(durationInFrames - 1, Math.round(Number(look?.musicAt ?? 0) * fps)));
+  // Spoken stretches for the music duck — only worked out when there is a duck.
+  const musicSpeech = typeof look?.duck === "number" && typeof musicUrl === "string"
+    ? speechSpans(
+        ((typeof captions === "string" ? (() => { try { return JSON.parse(captions); } catch { return []; } })() : captions) ?? [])
+          .filter((w: { start?: unknown; end?: unknown }) => typeof w?.start === "number" && typeof w?.end === "number")
+      )
+    : [];
+  const templateSounds = [
+    ...(look?.pops ?? []).filter((p) => p.sfx).map((p) => ({ at: p.at, url: p.sfx as string, volume: p.sfxVolume ?? 1 })),
+    ...(look?.sounds ?? []).map((x) => ({ at: x.at, url: x.url, volume: x.volume ?? 1 })),
+  ]
+    .filter((x) => typeof x.url === "string" && x.url.startsWith("http"))
+    .map((x) => ({ ...x, from: timelineFrameAt(placedSegments, x.at, fps) }))
+    .filter((x): x is { at: number; url: string; volume: number; from: number } => x.from !== null);
+  const flash = activePop(look, clipTime, "flash");
+  const pop = activePop(look, clipTime, "pop");
+  const punch = pop ? interpolate(pop.k, [0, 0.12, 0.6], [1, 1.07, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) : 1;
+
   return (
-    <AbsoluteFill className="bg-black">
+    <AbsoluteFill className="bg-black" style={look?.background ? { backgroundColor: look.background } : undefined}>
       {/* Main video — one Sequence per piece. Unsplit, that is a single piece
           spanning the whole short, i.e. exactly what this used to render. */}
-      {placedSegments.map(({ from, durF, segFrom }, i) => {
+      {placedSegments.map(({ from, durF, segFrom, clipFrom }, i) => {
           return (
             <Sequence key={`main-${i}`} from={from} durationInFrames={durF}>
               {/* Shrinks to half the frame while a split cutaway is on screen, so
                   the speaker and the B-roll each get full width at half height. */}
-              <div style={mainBox(activeSplit)}>
+              <div style={tplBox ?? mainBox(activeSplit)}>
                 {src ? (
                   <OffthreadVideo
                     src={src}
                     startFrom={segFrom}
-                    endAt={Math.max(segFrom + 1, segFrom + durF)}                    style={{
+                    endAt={Math.max(segFrom + 1, segFrom + durF)}
+                    // A template flash cuts the speaker's sound along with the
+                    // picture, so its sound effect plays on its own. Undefined
+                    // (full volume, the old behaviour) on every other clip.
+                    volume={look?.pops?.some((p) => p.mode === "flash")
+                      ? (f: number) => (activePop(look, (clipFrom + f) / fps, "flash") ? 0 : 1)
+                      : undefined}                    style={{
                       width: "100%",
                       height: "100%",
                       objectFit: "cover",
                       // Aim the half-height window at the face; a no-op when no
                       // cutaway is on screen.
                       objectPosition: mainObjectPosition(activeSplit, faceFocusY, usesPortraitSource),
+                      // Template grade and punch-in. Both undefined on an
+                      // ordinary short, which leaves the style as it was.
+                      filter: look?.grade ? GRADE_FILTERS[look.grade] : undefined,
+                      transform: punch !== 1 ? `scale(${punch})` : undefined,
                     }}
                   />
                 ) : (
@@ -718,16 +961,35 @@ export const ShortComposition = ({
           : null
       )}
 
+      {/* Template vignette, then a flash: the flash blacks out the picture, the
+          title drawn further down stays on top of it. */}
+      {look?.vignette ? (
+        <AbsoluteFill
+          style={{
+            ...(tplBox ?? {}),
+            pointerEvents: "none",
+            background: `radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,${look.vignette}) 100%)`,
+          }}
+        />
+      ) : null}
+      {flash && (
+        <AbsoluteFill style={{ backgroundColor: look?.background ?? "#000", alignItems: "center", justifyContent: "center" }}>
+          <span style={{ fontSize: frameWidth * 0.22, lineHeight: 1, transform: `scale(${interpolate(flash.k, [0, 0.15, 1], [0.6, 1.08, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })})` }}>
+            {flash.pop.emoji}
+          </span>
+        </AbsoluteFill>
+      )}
+
       {/* Captions */}
-      {activeGroup && !(style as CaptionStyle).disabled && (
+      {activeGroup && !flash && !(style as CaptionStyle).disabled && (
         <AbsoluteFill>
           {/* Styling lives in lib/captionRender.ts, shared verbatim with the
               render server, so this preview cannot drift from the export.
               While a cutaway is up the captions move to the split seam — at the
               normal bottom position they sit on top of the stock footage. */}
-          <div style={captionGroupStyle(style, captionSeam)}>
+          <div style={captionGroupStyle(groupStyle, captionSeam)}>
             {activeGroup.words.map((w: any, i: number) => (
-              <span key={i} style={captionWordStyle(style, currentTime >= w.start && currentTime <= w.end)}>
+              <span key={i} style={captionWordStyle(groupStyle, currentTime >= w.start && currentTime <= w.end)}>
                 {w.text || w.punctuated_word || w.word}
               </span>
             ))}
@@ -756,6 +1018,70 @@ export const ShortComposition = ({
           seam={hookSeam}
         />
       )}
+
+      {/* Template emoji pop, below the captions. */}
+      {pop && (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: `${(look?.popTop ?? 0.66) * 100}%`,
+            display: "flex",
+            justifyContent: "center",
+            pointerEvents: "none",
+          }}
+        >
+          <span
+            style={{
+              fontSize: frameWidth * 0.13,
+              lineHeight: 1,
+              opacity: interpolate(pop.k, [0, 0.08, 0.85, 1], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+              transform: `scale(${interpolate(pop.k, [0, 0.1, 0.18], [0.3, 1.18, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })})`,
+              filter: "drop-shadow(0 6px 18px rgba(0,0,0,0.55))",
+            }}
+          >
+            {pop.pop.emoji}
+          </span>
+        </div>
+      )}
+
+      {/* Template title — on for the whole clip, flashes included. */}
+      {look?.title?.text?.trim() ? <TemplateTitle title={look.title} /> : null}
+
+      {/* Template fade up from black. */}
+      {look?.fadeIn && frame < look.fadeIn * fps ? (
+        <AbsoluteFill style={{ backgroundColor: "#000", opacity: interpolate(frame, [0, look.fadeIn * fps], [1, 0]) }} />
+      ) : null}
+
+      {/* Template music, from `musicAt` (0 = the first frame). `loop` covers a
+          clip longer than what is left of the song after its best part; the
+          last second fades so the clip does not end mid-bar. */}
+      {typeof musicUrl === "string" && musicUrl.startsWith("http") ? (
+        <Sequence from={musicFrom} durationInFrames={Math.max(1, durationInFrames - musicFrom)}>
+          <Audio
+            src={musicUrl}
+            startFrom={Math.max(0, Math.round(Number(musicStartSec ?? 0) * fps))}
+            loop
+            volume={(f) => {
+              const v = Math.max(0, Math.min(1, Number(musicVolume ?? 0.2)));
+              const left = durationInFrames - musicFrom - f;
+              const tail = left < fps ? Math.max(0, left / fps) : 1;
+              const duck = typeof look?.duck === "number" && musicSpeech.length
+                ? duckAt(musicSpeech, st + (musicFrom + f) / fps, look.duck)
+                : 1;
+              return v * tail * duck;
+            }}
+          />
+        </Sequence>
+      ) : null}
+
+      {/* Template sounds: each flash's effect, then any one-shot sounds. */}
+      {templateSounds.map((snd, i) => (
+        <Sequence key={`tpl-snd-${i}`} from={snd.from} durationInFrames={Math.max(1, durationInFrames - snd.from)}>
+          <Audio src={snd.url} volume={snd.volume} />
+        </Sequence>
+      ))}
 
       {/* Watermark for free users */}
       {showWatermark && (
