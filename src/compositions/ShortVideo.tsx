@@ -550,8 +550,22 @@ function TemplateTitle({ title }: { title: NonNullable<TemplateLook["title"]> })
 }
 
 // ── Extra track clip renderer ─────────────────────────────────────────────────
-function ExtraClipLayer({ clip }: { clip: any }) {
+function ExtraClipLayer({ clip, box }: { clip: any; box?: React.CSSProperties | null }) {
   const frame = useCurrentFrame();
+  // A template's hook line (Track 1): drawn exactly as the template title.
+  if (clip.type === "text") {
+    return typeof clip.text === "string" && clip.text.trim() ? (
+      <TemplateTitle
+        title={{
+          text: clip.text,
+          style: clip.titleStyle === "bar" ? "bar" : "plain",
+          accent: Array.isArray(clip.accent) ? clip.accent : [],
+          accentColor: clip.accentColor,
+          top: typeof clip.top === "number" ? clip.top : undefined,
+        }}
+      />
+    ) : null;
+  }
   const N = Math.max(1, clip.durationFrames ?? 30);
   const effect = clip.effect || "none";
   const speed = Math.max(0.1, clip.effectSpeed ?? 1);
@@ -664,7 +678,11 @@ function ExtraClipLayer({ clip }: { clip: any }) {
   // anchored to one edge", so the split case bypasses them entirely.
   const isSplit = clip.split === "top" || clip.split === "bottom";
 
-  const containerStyle: React.CSSProperties = isSplit
+  // `box: "template"` — a template's B-roll / ending photos fill the template's
+  // own video box (Podcast's band, Cinematic's card), not the whole frame.
+  const containerStyle: React.CSSProperties = clip.box === "template" && box
+    ? box
+    : isSplit
     ? splitBox(clip.split)
     : overlayScale < 0.999
     ? {
@@ -1010,9 +1028,9 @@ export const ShortComposition = ({
       {/* Extra tracks rendered on top of base video (reversed so track[0] is topmost) */}
       {[...parsedExtraTracks].reverse().map((track: any) =>
         track.visible !== false && Array.isArray(track.clips)
-          ? track.clips.map((clip: any) => (
+          ? track.clips.filter((clip: any) => clip.type !== "text").map((clip: any) => (
               <Sequence key={clip.id} from={clip.startFrame ?? 0} durationInFrames={Math.max(1, clip.durationFrames ?? 30)}>
-                <ExtraClipLayer clip={clip} />
+                <ExtraClipLayer clip={clip} box={tplBox} />
               </Sequence>
             ))
           : null
@@ -1106,8 +1124,19 @@ export const ShortComposition = ({
       {/* Template ending word ("EXACTLY 💀"). */}
       {endCardOn && look?.endCard ? <TemplateEndCard card={look.endCard} t={clipTime} /> : null}
 
-      {/* Template title — on for the whole clip, flashes included. */}
+      {/* Template title — on for the whole clip, flashes included. Older
+          template clips carry it in the look; newer ones as a text clip on
+          Track 1 (editable), drawn here so a flash cannot cover it. */}
       {look?.title?.text?.trim() ? <TemplateTitle title={look.title} /> : null}
+      {parsedExtraTracks.flatMap((track: any) =>
+        track.visible !== false && Array.isArray(track.clips)
+          ? track.clips.filter((clip: any) => clip.type === "text").map((clip: any) => (
+              <Sequence key={clip.id} from={clip.startFrame ?? 0} durationInFrames={Math.max(1, clip.durationFrames ?? 30)}>
+                <ExtraClipLayer clip={clip} />
+              </Sequence>
+            ))
+          : []
+      )}
 
       {/* Template fade up from black. */}
       {look?.fadeIn && frame < look.fadeIn * fps ? (
