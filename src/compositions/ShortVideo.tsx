@@ -361,6 +361,13 @@ export interface TemplateLook {
   duck?: number;
   /** Where a pop sits, as a fraction of the frame height. */
   popTop?: number;
+  /**
+   * The ending beat, from `at` seconds to the end: a light flash on the cut,
+   * then the emoji under the face over the held frame (Aura Edit's reference
+   * ending). `text` adds a glowing word above it; templates leave it out.
+   * Captions and pops are off while it is up.
+   */
+  endCard?: { at: number; text?: string; emoji?: string };
   /** Active-word colours, one per caption group in turn. */
   captionColors?: string[];
 }
@@ -442,6 +449,55 @@ function duckAt(spans: [number, number][], t: number, duck: number, ease = 0.4):
     d = Math.min(d, t < a ? a - t : t - b);
   }
   return d >= ease ? 1 : duck + (1 - duck) * (d / ease);
+}
+
+function TemplateEndCard({ card, t }: { card: NonNullable<TemplateLook["endCard"]>; t: number }) {
+  const { width, height } = useVideoConfig();
+  const k = Math.max(0, t - card.at);
+  const clamp = { extrapolateLeft: "clamp" as const, extrapolateRight: "clamp" as const };
+  const text = card.text?.trim();
+  const fontSize = text ? width * Math.min(0.2, 1.35 / Math.max(4, text.length)) : 0;
+  return (
+    <>
+      {/* The reference brightens on the cut to the held frame, then settles. */}
+      <AbsoluteFill style={{ backgroundColor: "#fff3e0", opacity: interpolate(k, [0, 0.06, 0.35], [0.55, 0.4, 0], clamp), pointerEvents: "none" }} />
+      {/* Under the face, as the reference places its skull. */}
+      <div style={{ position: "absolute", left: 0, right: 0, top: height * (text ? 0.55 : 0.62), display: "flex", flexDirection: "column", alignItems: "center", pointerEvents: "none" }}>
+        {text && (
+          <p
+            style={{
+              margin: 0,
+              fontFamily: `"Anton", Impact, "Arial Narrow", sans-serif`,
+              fontSize,
+              lineHeight: 1,
+              letterSpacing: fontSize * 0.04,
+              textTransform: "uppercase",
+              color: "#FFD84A",
+              opacity: interpolate(k, [0, 0.08], [0, 1], clamp),
+              transform: `scale(${interpolate(k, [0, 0.18, 0.32], [1.6, 0.94, 1], clamp)})`,
+              textShadow: `0 0 ${fontSize * 0.12}px #FFB300, 0 0 ${fontSize * 0.35}px #FF7A00`,
+            }}
+          >
+            {text}
+          </p>
+        )}
+        {card.emoji && (
+          <span
+            style={{
+              fontSize: width * (text ? 0.16 : 0.2),
+              lineHeight: 1,
+              marginTop: text ? height * 0.02 : 0,
+              // Pops in on the cut, then breathes gently for the rest.
+              transform: `scale(${interpolate(k, [0, 0.12, 0.22], [0.2, 1.15, 1], clamp) * (1 + 0.03 * Math.sin(k * 4))})`,
+              filter: "drop-shadow(0 10px 24px rgba(0,0,0,0.6))",
+            }}
+          >
+            {card.emoji}
+          </span>
+        )}
+      </div>
+    </>
+  );
 }
 
 function TemplateTitle({ title }: { title: NonNullable<TemplateLook["title"]> }) {
@@ -907,6 +963,7 @@ export const ShortComposition = ({
     .filter((x): x is { at: number; url: string; volume: number; from: number } => x.from !== null);
   const flash = activePop(look, clipTime, "flash");
   const pop = activePop(look, clipTime, "pop");
+  const endCardOn = !!look?.endCard && clipTime >= look.endCard.at;
   const punch = pop ? interpolate(pop.k, [0, 0.12, 0.6], [1, 1.07, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) : 1;
 
   return (
@@ -981,7 +1038,7 @@ export const ShortComposition = ({
       )}
 
       {/* Captions */}
-      {activeGroup && !flash && !(style as CaptionStyle).disabled && (
+      {activeGroup && !flash && !endCardOn && !(style as CaptionStyle).disabled && (
         <AbsoluteFill>
           {/* Styling lives in lib/captionRender.ts, shared verbatim with the
               render server, so this preview cannot drift from the export.
@@ -1020,7 +1077,7 @@ export const ShortComposition = ({
       )}
 
       {/* Template emoji pop, below the captions. */}
-      {pop && (
+      {pop && !endCardOn && (
         <div
           style={{
             position: "absolute",
@@ -1045,6 +1102,9 @@ export const ShortComposition = ({
           </span>
         </div>
       )}
+
+      {/* Template ending word ("EXACTLY 💀"). */}
+      {endCardOn && look?.endCard ? <TemplateEndCard card={look.endCard} t={clipTime} /> : null}
 
       {/* Template title — on for the whole clip, flashes included. */}
       {look?.title?.text?.trim() ? <TemplateTitle title={look.title} /> : null}
