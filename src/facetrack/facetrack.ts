@@ -92,6 +92,59 @@ const DETECTION_FPS = 4;   // 4fps is sufficient for speaker tracking; was 6
 const SWITCH_THRESHOLD            = 0.20;
 const TRUE_CENTER_REL             = 0.5;
 const BLUR_BG_FACE_THRESHOLD      = 0.10;
+/**
+ * Share of probe samples with anybody on screen at which a clip is about a
+ * person, and is cropped to them rather than fitted whole over a blur.
+ *
+ * Only a screen nobody is on (gameplay, a show, a screen recording) or a crowd
+ * of five-plus keeps the whole frame. Measured with MoveNet on 2026-10-12:
+ *
+ *   | source                                   | samples with a person |
+ *   |------------------------------------------|-----------------------|
+ *   | Minecraft gameplay (5 clips)             | 0-6%                  |
+ *   | handheld travel vlog (5 clips)           | 33-89%                |
+ */
+const PEOPLE_ON_SCREEN_SHARE      = 0.20;
+/**
+ * On a moving picture, the share of the samples with anybody on screen that
+ * hold two or more, at which it is a group and keeps the whole frame. Travel
+ * vlog, 2026-10-12: the solo-selfie clips 0-33%, a group selfie 64%.
+ */
+const MOVING_GROUP_SHARE          = 0.50;
+/**
+ * ...unless at least this share of its two-plus samples fit one 9:16 window,
+ * in which case the window holds them all and is the better picture. Same
+ * video: two men side by side 60% (cropped, and the user's model answer), two
+ * at opposite edges of the frame 4% (whole frame).
+ */
+const MOVING_GROUP_FIT_SHARE      = 0.50;
+
+/** Of the probe samples holding anybody, the share holding two or more. */
+function groupShare(perFrame: FaceBox[][]): number {
+  const seen = perFrame.filter((f) => f.length > 0);
+  return seen.length === 0 ? 0 : seen.filter((f) => f.length >= 2).length / seen.length;
+}
+
+/** Of the samples holding two or more heads, the share whose heads all fit one 9:16 window. */
+function groupFitShare(perFrame: FaceBox[][], srcW: number, srcH: number): number {
+  const windowW = (srcH * 9) / 16 / srcW;
+  const groups = perFrame.filter((f) => f.length >= 2);
+  if (groups.length === 0) return 0;
+  const fit = groups.filter((f) => {
+    // A head is about as wide as it is tall; `h` is a fraction of frame height.
+    const halfW = (b: FaceBox) => (b.h * srcH) / srcW / 2;
+    const left = Math.min(...f.map((b) => b.cx - halfW(b)));
+    const right = Math.max(...f.map((b) => b.cx + halfW(b)));
+    return right - left <= windowW;
+  }).length;
+  return fit / groups.length;
+}
+
+/** Share of probe samples holding at least one head. */
+function peopleShare(perFrame: FaceBox[][]): number {
+  if (perFrame.length === 0) return 0;
+  return perFrame.filter((f) => f.length > 0).length / perFrame.length;
+}
 
 // ─── MULTI-UP: the multi-speaker stack ───────────────────────────────────────
 //
@@ -283,9 +336,8 @@ const MULTI_UP_SEAM_SNAP = 0.06;
  * treated as a crowd.
  *
  * Five people cannot go in four slots without framing somebody half out of
- * their box, so a crowd keeps the single-speaker camera — which follows
- * whoever is talking, and is what every tool in this category does with a
- * panel it cannot lay out.
+ * their box, and a camera on one of them drops the rest, so a crowd is fitted
+ * whole over a blur — see the `crowd` out-param of planMultiUp.
  *
  * Same value and same reasoning as MULTI_UP_UPGRADE_FRAC: positive sightings
  * count, absences do not.
@@ -2316,7 +2368,9 @@ export function planMultiUp(
   srcH: number,
   probeFps: number,
   clipDur: number,
-  pixels?: BlockLuma
+  pixels?: BlockLuma,
+  /** Set when the clip is rejected as a crowd — the caller blurs those. */
+  crowd?: { seen: boolean }
 ): MultiUpPlan | null {
   // Every rejection says why. A bare `return null` made a group shot that failed
   // to stack indistinguishable from one that was never a group shot — there was
@@ -2470,10 +2524,11 @@ export function planMultiUp(
   // a crowd has no grid and therefore no ranges to measure. The question is
   // only "are there more people here than four", and frames answer it.
   if (crowdedFrames >= MULTI_UP_CROWD_FRAC * chosen.groups.length) {
+    if (crowd) crowd.seen = true;
     return reject(
       `crowd — ${crowdedFrames} sampled frame(s) hold more than ${MULTI_UP_MAX_SLOTS} people ` +
       `against ${chosen.groups.length} holding ${chosen.size}; there is no grid for that many, ` +
-      `so the single-speaker camera follows whoever is talking instead`
+      `so the whole frame is fitted over a blur instead`
     );
   }
 
@@ -3418,14 +3473,39 @@ export async function detectFacesCropData(
   /** Set only when the probe could not RUN — see isProbeUnavailable. */
   let multiUpUnavailable: string | undefined;
   let reaction: ReactionResult | null = null;
+  /** The whole-frame probe's heads, kept for the camera when BlazeFace misses — see PEOPLE_ON_SCREEN_SHARE. */
+  let probe: { perFrame: FaceBox[][]; probeFps: number } | null = null;
+  /** More people than the stack holds, on either probe pass — the one shape that is blurred. */
+  const crowd = { seen: false };
+  /** A moving picture with one person on it: the camera follows them, nothing is stacked. */
+  let movingSingle = false;
   try {
     const { perFrame, probeFps, pixels } = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH);
+    probe = { perFrame, probeFps };
     // A reaction video first: its webcams would otherwise read as a two-shot (or,
     // with a face in the show, a three-shot) and the show itself would be lost.
     reaction = planReaction(perFrame, srcW, srcH, probeFps, clipDur, pixels);
+    if (reaction?.kind === "fullFrame") {
+      // A picture that never stops moving is a screen (gameplay, a show) or a
+      // handheld camera. Nobody on it keeps the whole frame. People on it are
+      // cropped to — one 9:16 window, never a stack, because a 50/50 of
+      // passers-by on a moving camera looks broken — unless they stand too far
+      // apart for one window to hold them, which keeps the whole frame too.
+      const onScreen = peopleShare(perFrame);
+      const group = groupShare(perFrame);
+      const fits = groupFitShare(perFrame, srcW, srcH);
+      if (onScreen >= PEOPLE_ON_SCREEN_SHARE && (group < MOVING_GROUP_SHARE || fits >= MOVING_GROUP_FIT_SHARE)) {
+        console.log(
+          `[facetrack] Not full-frame after all: someone is on screen in ${(onScreen * 100).toFixed(0)}% of samples ` +
+          `(2+ in ${(group * 100).toFixed(0)}% of those, fitting one 9:16 window in ${(fits * 100).toFixed(0)}%), so they are cropped to.`
+        );
+        reaction = null;
+        movingSingle = true;
+      }
+    }
     multiUp = reaction?.kind === "window"
       ? reaction.plan
-      : reaction ? null : planMultiUp(perFrame, srcW, srcH, probeFps, clipDur, pixels);
+      : reaction || movingSingle ? null : planMultiUp(perFrame, srcW, srcH, probeFps, clipDur, pixels, crowd);
 
     // ── Second pass, for clips the whole-frame probe read poorly ──
     //
@@ -3445,7 +3525,7 @@ export async function detectFacesCropData(
     // the common case, and the one that is already right — never pays for this.
     // When it does run it costs one more ffmpeg pipe and about 4x the detection
     // of a single pass, so it is worth being strict about when.
-    if (reaction) {
+    if (reaction || movingSingle) {
       // Settled: the slices look for more PEOPLE, and a reaction is not about them.
     } else if (!multiUp || multiUp.coverage < MULTI_UP_RESLICE_COVERAGE) {
       console.log(
@@ -3454,7 +3534,7 @@ export async function detectFacesCropData(
         ` — re-probing in ${PROBE_SLICES} slices.`
       );
       const sliced = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, PROBE_SLICES);
-      const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels);
+      const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels, crowd);
       multiUp = betterPlan(multiUp, slicedPlan);
     } else if (mayBeMissingAGrid(multiUp, perFrame)) {
       // Only a GRID may replace the whole-frame plan here. It already covers
@@ -3465,7 +3545,7 @@ export async function detectFacesCropData(
         `re-probing in ${PROBE_SLICES} slices.`
       );
       const sliced = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, PROBE_SLICES);
-      const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels);
+      const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels, crowd);
       if (slicedPlan?.layouts[0]?.axis === "grid") multiUp = betterPlan(multiUp, slicedPlan);
     }
   } catch (err) {
@@ -3495,6 +3575,20 @@ export async function detectFacesCropData(
     // whole picture, fitted over its own blur, is the answer — see planReaction.
     // No camera: a 9:16 window of a show crops out the show, and it follows
     // whichever face BlazeFace likes, which is as often a character as a reactor.
+    return {
+      srcW, srcH, fps, hasAudio,
+      clipStart: start, clipEnd: end,
+      cropW, cropH, rawCropW,
+      isBlurBg: true,
+      filterComplex: [...blurBgParts("0:v", "outv"), ...(hasAudio ? [`[0:a]asetpts=PTS-STARTPTS[outa]`] : [])].join(";"),
+      ...multiUpFields(null, multiUpUnavailable),
+    };
+  }
+
+  if (!multiUp && crowd.seen) {
+    // Five or more people: no grid holds them and a camera on one of them drops
+    // the rest, so the whole picture is fitted over its own blur.
+    console.log(`[facetrack] Crowd of more than ${MULTI_UP_MAX_SLOTS} — fitting the whole frame over a blur.`);
     return {
       srcW, srcH, fps, hasAudio,
       clipStart: start, clipEnd: end,
@@ -3597,6 +3691,31 @@ export async function detectFacesCropData(
   }
 
   console.log(`[facetrack] Detected faces in ${detectedCount}/${frames.length} frames.`);
+
+  // BlazeFace misses faces MoveNet still finds — a profile, a wide handheld
+  // shot, low light. Below the blur threshold that used to blur a clip with a
+  // person in it; when the probe saw somebody, its heads steer the camera over
+  // the gaps instead. Only below the threshold, so a clip BlazeFace reads well
+  // keeps exactly the camera it had.
+  if (
+    frames.length > 0 && detectedCount / frames.length < BLUR_BG_FACE_THRESHOLD &&
+    probe && peopleShare(probe.perFrame) >= PEOPLE_ON_SCREEN_SHARE
+  ) {
+    const { perFrame, probeFps } = probe;
+    let filled = 0;
+    for (let i = 0; i < frames.length; i++) {
+      if (rawCx[i] !== null) continue;
+      const j = Math.min(perFrame.length - 1, Math.round((i / DETECTION_FPS) * probeFps));
+      const heads = perFrame[j];
+      if (!heads || heads.length === 0) continue;
+      const big = heads.reduce((a, b) => (b.h > a.h ? b : a));
+      rawCx[i] = big.cx;
+      faceYs.push(big.cy);
+      filled++;
+    }
+    detectedCount += filled;
+    console.log(`[facetrack] Filled ${filled} BlazeFace misses from the speaker probe — ${detectedCount}/${frames.length} frames now placed.`);
+  }
 
   // Median, not mean: a single frame that latched onto a bystander or a hand
   // would drag an average far enough to frame the split on empty background.
