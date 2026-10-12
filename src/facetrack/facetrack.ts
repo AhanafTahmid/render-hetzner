@@ -3003,6 +3003,25 @@ const REACT_MIN_FILL = 0.45;
 /** Least share of the frame changing, and least median change, for the full-frame shape. */
 const REACT_FULL_ACTIVE = 0.5;
 const REACT_FULL_MEDIAN = 0.24;
+/**
+ * A sample pair is a CUT when at least this share of blocks changed across it.
+ *
+ * The full-frame test is re-run on the pairs that are not cuts, because a
+ * podcast cutting between cameras every 2-3s passes it on the whole clip (the
+ * cuts alone make every block "change" on ~25-30% of samples). Measured on the
+ * 39 full-frame clips of 2026-09-28 → 10-12, between cuts:
+ *
+ *   | source                                         | active | median |
+ *   |------------------------------------------------|--------|--------|
+ *   | podcast, one person per shot + graphic cards   | 0-2%   | 5-6%   |
+ *   | IRL streamer, one person                       | 7%     | 16%    |
+ *   | handheld vlog / two-person call                | 41-46% | 23-24% |
+ *   | gameplay, fast-cut YouTube edits (real shows)  | 61-97% | 29-45% |
+ *
+ * The first three were all wrongly fitted over a blur; they get a face crop or
+ * a stack now. Pair shares are bimodal — a cut is 54-92%, a held shot 0-16%.
+ */
+const REACT_CUT_SHARE = 0.5;
 /** Gap between runs of the reactor being seen that is still one stretch, in seconds. */
 const REACT_GAP_BRIDGE_S = 4;
 /** Head height as a fraction of the reactor cell's height. */
@@ -3013,6 +3032,33 @@ const REACT_MAX_UPSCALE = 3;
 export type ReactionResult =
   | { kind: "window"; plan: MultiUpPlan }
   | { kind: "fullFrame"; activeShare: number; medianChange: number };
+
+/** Whether the sample pair (i-1, i) is a cut — see REACT_CUT_SHARE. */
+function isCut(px: BlockLuma, i: number): boolean {
+  const a = px.frames[i - 1], b = px.frames[i];
+  let changed = 0;
+  for (let k = 0; k < a.length; k++) if (Math.abs(a[k] - b[k]) > REACT_BLOCK_DELTA) changed++;
+  return changed / a.length >= REACT_CUT_SHARE;
+}
+
+/**
+ * Share of the kept sample pairs on which each block changed, or null when no
+ * pair is kept — a clip that is nothing but cuts has no "between".
+ */
+function changeFreq(px: BlockLuma, keep: (i: number) => boolean): Float32Array | null {
+  const N = px.cols * px.rows;
+  const freq = new Float32Array(N);
+  let pairs = 0;
+  for (let i = 1; i < px.frames.length; i++) {
+    if (!keep(i)) continue;
+    pairs++;
+    const a = px.frames[i - 1], b = px.frames[i];
+    for (let k = 0; k < N; k++) if (Math.abs(a[k] - b[k]) > REACT_BLOCK_DELTA) freq[k]++;
+  }
+  if (pairs === 0) return null;
+  for (let k = 0; k < N; k++) freq[k] /= pairs;
+  return freq;
+}
 
 export function planReaction(
   perFrame: FaceBox[][],
@@ -3032,17 +3078,27 @@ export function planReaction(
   const N = cols * rows;
 
   /** Share of sample pairs on which each block changed. */
-  const freq = new Float32Array(N);
-  for (let i = 1; i < frames; i++) {
-    const a = pixels.frames[i - 1], b = pixels.frames[i];
-    for (let k = 0; k < N; k++) if (Math.abs(a[k] - b[k]) > REACT_BLOCK_DELTA) freq[k]++;
-  }
-  for (let k = 0; k < N; k++) freq[k] /= frames - 1;
+  const freq = changeFreq(pixels, () => true)!;
   const medianChange = median(Array.from(freq));
   const activeAll = Array.from(freq).filter((v) => v >= REACT_ACTIVE_FREQ).length / N;
 
   // ── The show full-frame ──
   if (activeAll >= REACT_FULL_ACTIVE && medianChange >= REACT_FULL_MEDIAN) {
+    // A podcast that cuts between cameras every couple of seconds changes
+    // EVERYWHERE at every cut, so on the whole-clip numbers it reads as a show.
+    // Between cuts it is still; a show keeps moving. Measured on the pairs that
+    // are not cuts, the two never overlap — see REACT_CUT_SHARE.
+    const steady = changeFreq(pixels, (i) => !isCut(pixels, i));
+    if (steady) {
+      const steadyActive = steady.filter((v) => v >= REACT_ACTIVE_FREQ).length / N;
+      const steadyMedian = median(Array.from(steady));
+      if (steadyActive < REACT_FULL_ACTIVE || steadyMedian < REACT_FULL_MEDIAN) {
+        return quiet(
+          `${(activeAll * 100).toFixed(0)}% of the picture changes, but only ` +
+          `${(steadyActive * 100).toFixed(0)}% between cuts — a cutting edit, not a show`
+        );
+      }
+    }
     console.log(
       `[facetrack] Reaction, show full-frame: ${(activeAll * 100).toFixed(0)}% of the picture changes, ` +
       `median block ${(medianChange * 100).toFixed(0)}% of samples — fitting the whole frame.`
