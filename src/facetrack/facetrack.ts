@@ -1461,19 +1461,54 @@ const PROBE_SLICE_COVER = 0.6;
  */
 const PROBE_DEDUPE_DIST = 0.05;
 
-/** Full-height detection windows covering the frame, left to right. */
-function sliceWindows(w: number, slices: number): { x: number; w: number }[] {
-  if (slices <= 1) return [{ x: 0, w }];
-  const sw = Math.max(2, Math.round((w * PROBE_SLICE_COVER) / 2) * 2);
-  const step = (w - sw) / (slices - 1);
-  return Array.from({ length: slices }, (_, i) => ({ x: Math.round(i * step), w: sw }));
+/**
+ * The grid-only fallback probe: the frame cut into its four quarters, exact
+ * halves on both axes, no overlap.
+ *
+ * Measured on pmv5ot13ne05efq (Zoom 2x2, 1280x720, 26 samples): the whole
+ * frame never found the top-right speaker, and PROBE_SLICES columns found all
+ * four on 2 of 26 frames. Each quarter on its own found its one speaker on 25
+ * of 25. A column still hands MoveNet two people stacked in a 0.6-wide strip;
+ * a quarter hands it one person at four times the share of its input.
+ *
+ * No overlap because a 2x2 call's seams ARE the halves, and an overlapping
+ * quarter shows MoveNet a sliver of the neighbouring tile's head — a partial
+ * pose dedupe cannot be relied on to merge. This pass only ever replaces the
+ * plan with a grid, so a layout whose seams are elsewhere loses nothing by it.
+ */
+const PROBE_QUARTERS = { slices: 2, rows: 2, cover: 0.5 } as const;
+
+/** Detection windows covering the frame, left to right then top to bottom. */
+function sliceWindows(
+  w: number,
+  h: number,
+  slices: number,
+  rows: number = 1,
+  cover: number = PROBE_SLICE_COVER
+): { x: number; y: number; w: number; h: number }[] {
+  const spans = (len: number, n: number) => {
+    if (n <= 1) return [{ at: 0, len }];
+    const sl = Math.max(2, Math.round((len * cover) / 2) * 2);
+    const step = (len - sl) / (n - 1);
+    return Array.from({ length: n }, (_, i) => ({ at: Math.round(i * step), len: sl }));
+  };
+  return spans(h, rows).flatMap((r) =>
+    spans(w, slices).map((c) => ({ x: c.at, y: r.at, w: c.len, h: r.len }))
+  );
 }
 
-/** A full-height column of an rgb24 frame, copied out row by row. */
-function cropRgb(src: Uint8Array, w: number, h: number, x: number, cw: number): Uint8Array {
-  const out = new Uint8Array(cw * h * 3);
-  for (let y = 0; y < h; y++) {
-    const from = (y * w + x) * 3;
+/** A rectangle of an rgb24 frame, copied out row by row. */
+function cropRgb(
+  src: Uint8Array,
+  w: number,
+  x: number,
+  y0: number,
+  cw: number,
+  ch: number
+): Uint8Array {
+  const out = new Uint8Array(cw * ch * 3);
+  for (let y = 0; y < ch; y++) {
+    const from = ((y0 + y) * w + x) * 3;
     out.set(src.subarray(from, from + cw * 3), y * cw * 3);
   }
   return out;
@@ -1502,7 +1537,8 @@ function dedupeHeads(heads: FaceBox[]): FaceBox[] {
  * re-tune.
  *
  * `slices` runs the detector on overlapping horizontal halves of each frame
- * instead of on the whole frame — see PROBE_SLICES and `sliceWindows`.
+ * instead of on the whole frame — see PROBE_SLICES and `sliceWindows`. `rows`
+ * cuts those columns into tiles as well — see PROBE_QUARTERS.
  */
 export async function probeSpeakers(
   ffmpeg: string,
@@ -1511,7 +1547,9 @@ export async function probeSpeakers(
   clipDur: number,
   srcW: number,
   srcH: number,
-  slices: number = 1
+  slices: number = 1,
+  rows: number = 1,
+  cover: number = PROBE_SLICE_COVER
 ): Promise<{ perFrame: FaceBox[][]; probeFps: number; pixels: BlockLuma }> {
   const w = Math.max(2, Math.round(PROBE_W / 2) * 2);
   const h = Math.max(2, Math.round((srcH / srcW) * w / 2) * 2);
@@ -1526,18 +1564,18 @@ export async function probeSpeakers(
   const tf = require("@tensorflow/tfjs") as typeof import("@tensorflow/tfjs");
 
   const frames = await pipeFrames(ffmpeg, inputPath, clipStart, clipDur, w, h, probeFps);
-  const windows = sliceWindows(w, slices);
+  const windows = sliceWindows(w, h, slices, rows, cover);
   console.log(
     `[facetrack] Speaker probe: ${frames.length} frames at ${w}×${h} (${probeFps.toFixed(2)}fps)` +
-    (windows.length > 1 ? `, ${windows.length} slices of ${windows[0].w}px.` : ".")
+    (windows.length > 1 ? `, ${windows.length} slices of ${windows[0].w}×${windows[0].h}px.` : ".")
   );
 
   const perFrame: FaceBox[][] = [];
   for (const frame of frames) {
     const heads: FaceBox[] = [];
     for (const win of windows) {
-      const pixels = win.w === w ? frame : cropRgb(frame, w, h, win.x, win.w);
-      const tensor = tf.tensor3d(pixels, [h, win.w, 3], "int32");
+      const pixels = win.w === w && win.h === h ? frame : cropRgb(frame, w, win.x, win.y, win.w, win.h);
+      const tensor = tf.tensor3d(pixels, [win.h, win.w, 3], "int32");
       let poses: any[] = [];
       try {
         poses = await detector.estimatePoses(tensor, { maxPoses: 6 });
@@ -1546,14 +1584,14 @@ export async function probeSpeakers(
       }
       for (const p of poses) {
         if ((p.score ?? 0) < PROBE_MIN_POSE_SCORE) continue;
-        // The slices are full-height by construction, so `h` — a fraction of
-        // frame height — needs no correction; only cx is offset back into the
+        // A window is cut out, not rescaled, so `h` — head height over FRAME
+        // height — needs no correction; only the centre is offset back into the
         // whole frame. planMultiUp works in fractions of the frame, not pixels.
         const b = headFromPose(p, h);
         if (!b) continue;
         heads.push({
           cx: Math.max(0, Math.min(1, (b.cx + win.x) / w)),
-          cy: Math.max(0, Math.min(1, b.cy / h)),
+          cy: Math.max(0, Math.min(1, (b.cy + win.y) / h)),
           h: b.h,
         });
       }
@@ -2988,12 +3026,23 @@ const MULTI_UP_RESLICE_COVERAGE = 0.5;
  *   median 0.40, never past 0.45; four real side-by-side 2-ups from other
  *   projects ended at 0.51, 0.68, 0.70 and 0.70. The bottom-row case is the
  *   mirror image. Sliced, it is a grid for 16.5 of 22s.
+ * - Only one COLUMN was seen. pmv5ot13ne05efq (Zoom 2x2, busy bookshelf behind
+ *   the top-right speaker): the whole-frame pass never found the top-right
+ *   head, saw the other three on 21 of 26 frames, and planned a full-length
+ *   2-up on y of the left column. Another clip of the same call came out as a
+ *   2-up on y of the top-left and bottom-right speakers, a diagonal. Either
+ *   way it is a 2-up on y, two people one above the other, and on a landscape
+ *   source that is a compositor layout, not a room. So every 2-up on y is
+ *   checked; a wrong guess costs only the probe time, since only a grid may
+ *   replace the plan.
  */
 function mayBeMissingAGrid(plan: MultiUpPlan, perFrame: FaceBox[][]): boolean {
   const dominant = plan.layouts[0];
   if (!dominant || dominant.axis === "grid") return false;
   if (plan.layouts.some((l) => l.axis === "grid")) return true;
-  if (dominant.slots !== 2 || dominant.axis !== "x") return false;
+  if (dominant.slots !== 2) return false;
+  if (dominant.axis === "y") return true;
+  if (dominant.axis !== "x") return false;
   const heads = perFrame.filter((f) => f.length === 2).flat();
   if (heads.length === 0) return false;
   const top = median(heads.map((b) => b.cy - b.h / 2));
@@ -3546,7 +3595,18 @@ export async function detectFacesCropData(
       );
       const sliced = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, PROBE_SLICES);
       const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels, crowd);
-      if (slicedPlan?.layouts[0]?.axis === "grid") multiUp = betterPlan(multiUp, slicedPlan);
+      if (slicedPlan?.layouts[0]?.axis === "grid") {
+        multiUp = betterPlan(multiUp, slicedPlan);
+      } else {
+        // Columns still hand MoveNet two stacked people per strip, and a busy
+        // tile can lose one of them every frame. Quarters give it one person
+        // each — see PROBE_QUARTERS.
+        console.log(`[facetrack] Columns found no 2x2 — re-probing in quarters.`);
+        const { slices, rows, cover } = PROBE_QUARTERS;
+        const quartered = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, slices, rows, cover);
+        const quarteredPlan = planMultiUp(quartered.perFrame, srcW, srcH, quartered.probeFps, clipDur, quartered.pixels, crowd);
+        if (quarteredPlan?.layouts[0]?.axis === "grid") multiUp = betterPlan(multiUp, quarteredPlan);
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message.split("\n")[0] : String(err);
