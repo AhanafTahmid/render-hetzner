@@ -3050,6 +3050,150 @@ function mayBeMissingAGrid(plan: MultiUpPlan, perFrame: FaceBox[][]): boolean {
   return bottom < 0.5 || top > 0.5;
 }
 
+/**
+ * Share of samples a quarter of the frame must hold a head in to count as an
+ * occupied tile of a 2x2 call. See `callGridQuarters`.
+ *
+ * Measured on p9w1o5oyxwg (Zoom 2x2, 1280x720): the quarter probe finds each
+ * visible speaker on nearly every sample, while a speaker who pulls a cap down
+ * or turns away still shows on a third of them. 0.25 keeps that tile and is
+ * far above the odd stray detection in an empty corner.
+ */
+const CALL_GRID_MIN_QUARTER_SHARE = 0.25;
+/**
+ * Most samples that may hold a head straddling the frame's centre lines. A
+ * compositor's 2x2 never puts a face across a seam; a real room, a speaker
+ * view, or a three-way call (one tile centred under two) does on nearly every
+ * frame. 0.1 allows a speaker who leans across their tile edge now and then.
+ */
+const CALL_GRID_MAX_STRADDLE_SHARE = 0.1;
+
+/**
+ * Smallest a tile's speaker may be against the biggest tile's, by median head
+ * height. Real call tiles differ by camera distance (0.24–0.33 of frame height
+ * on p9w1o5oyxwg); a face in a poster behind a speaker came out at 0.03.
+ */
+const CALL_GRID_MIN_TILE_HEAD_FRAC = 0.4;
+
+/**
+ * Furthest apart, in frame widths, the speakers of a column's top and bottom
+ * tiles may sit. Measured: 0.04 on p9w1o5oyxwg's 2x2; 0.23 on 3fygr8hqdp's
+ * 3+2 layout, whose bottom row is centred under a three-tile top row.
+ */
+const CALL_GRID_COLUMN_ALIGN = 0.12;
+
+/**
+ * Is this clip a 2x2 video call, and where does each tile's speaker sit?
+ *
+ * Every other grid test asks MoveNet to see four people in one frame, and a
+ * call breaks that all the time: a speaker pulls a cap down, turns to a shelf,
+ * or sits in front of a poster that reads as a second face. p9w1o5oyxwg (Zoom
+ * 2x2, Beatles trivia) then came out as a 3-up on x (crops 168×100, the head at
+ * 147% of each band) or a 2-up whose bands each held two tiles: all of it
+ * "four people stacked vertically".
+ *
+ * So this asks a question that does not need all four on any one frame: across
+ * the clip, do heads sit INSIDE at least three of the four quarters, spanning
+ * both rows and both columns, and almost never across the centre lines? A 2x2
+ * call is exactly that; a room, a speaker view or a three-way call is not.
+ *
+ * Returns the four tiles' speaker positions (row-major; an unseen tile mirrors
+ * the others' position inside their own tile) with how many tiles were seen;
+ * `tiles: null` for two tiles one above the other, null for no call grid.
+ */
+function callGridQuarters(
+  passes: FaceBox[][][], srcW: number, srcH: number
+): { tiles: FaceBox[] | null; occupied: number } | null {
+  const frames = Math.max(0, ...passes.map((p) => p.length));
+  if (frames === 0) return null;
+  const quarterOf = (b: FaceBox) => (b.cy < 0.5 ? 0 : 2) + (b.cx < 0.5 ? 0 : 1);
+  const perQuarter: FaceBox[][] = [[], [], [], []];
+  const seen = [0, 0, 0, 0];
+  let straddling = 0;
+  for (let i = 0; i < frames; i++) {
+    const heads = passes.flatMap((p) => p[i] ?? []);
+    let straddles = false;
+    const best: (FaceBox | null)[] = [null, null, null, null];
+    for (const b of heads) {
+      const halfW = (b.h * srcH) / (HEAD_ASPECT * srcW) / 2;
+      // Across a centre line by more than half its own size is a face no
+      // compositor's 2x2 would draw.
+      if (Math.abs(b.cx - 0.5) < halfW / 2 || Math.abs(b.cy - 0.5) < b.h / 4 || b.h > 0.5) {
+        straddles = true;
+        continue;
+      }
+      const q = quarterOf(b);
+      // The biggest head in a tile is its speaker; a smaller one is a poster
+      // or a picture on the wall behind them.
+      if (!best[q] || b.h > best[q]!.h) best[q] = b;
+    }
+    if (straddles) straddling++;
+    best.forEach((b, q) => { if (b) { perQuarter[q].push(b); seen[q]++; } });
+  }
+  if (straddling > CALL_GRID_MAX_STRADDLE_SHARE * frames) return null;
+  // A tile whose "speaker" is a fraction of the others' size is a picture on
+  // their wall, not them: on p9w1o5oyxwg the bottom-right speaker, turned away,
+  // was never found, but a 0.03-tall head in the poster behind him was, on
+  // every sample. Such a tile counts as unseen and takes the others' framing.
+  const tileH = perQuarter.map((boxes) => (boxes.length ? median(boxes.map((b) => b.h)) : 0));
+  const occupied = seen.map((n, q) =>
+    n >= CALL_GRID_MIN_QUARTER_SHARE * frames && tileH[q] >= CALL_GRID_MIN_TILE_HEAD_FRAC * Math.max(...tileH)
+  );
+  const count = occupied.filter(Boolean).length;
+  const bothRows = (occupied[0] || occupied[1]) && (occupied[2] || occupied[3]);
+  // Two tiles one above the other (a column, or a diagonal) is a call whose
+  // other speakers were missed — worth a quarter probe, not yet a grid.
+  if (count < 3) return bothRows && count === 2 ? { tiles: null, occupied: count } : null;
+
+  // Each tile's speaker relative to their own tile, so a missing tile can take
+  // the others' framing.
+  const local = (b: FaceBox, q: number) => ({
+    x: b.cx - (q % 2) * 0.5, y: b.cy - (q < 2 ? 0 : 0.5), h: b.h,
+  });
+  const placed = perQuarter.map((boxes, q) =>
+    occupied[q] ? {
+      x: median(boxes.map((b) => local(b, q).x)),
+      y: median(boxes.map((b) => local(b, q).y)),
+      h: median(boxes.map((b) => b.h)),
+    } : null
+  );
+  // A compositor's 2x2 stacks its tiles in columns, so the speakers above and
+  // below each other share an x. A 3+2 call (three tiles over two centred ones)
+  // passes the quarter test with its outer four people but not this one: on
+  // 3fygr8hqdp the top heads sat at 0.17/0.83 and the bottom ones at 0.40/0.60.
+  for (const col of [0, 1]) {
+    const top = placed[col], bottom = placed[col + 2];
+    if (top && bottom && Math.abs(top.x - bottom.x) > CALL_GRID_COLUMN_ALIGN) return null;
+  }
+  const known = placed.filter((p): p is { x: number; y: number; h: number } => !!p);
+  const fallback = {
+    x: median(known.map((p) => p.x)), y: median(known.map((p) => p.y)), h: median(known.map((p) => p.h)),
+  };
+  const tiles = placed.map((p, q) => {
+    const at = p ?? fallback;
+    return { cx: at.x + (q % 2) * 0.5, cy: at.y + (q < 2 ? 0 : 0.5), h: at.h };
+  });
+  return { tiles, occupied: count };
+}
+
+/**
+ * A whole-clip 2x2 for a call `callGridQuarters` recognised. The four tile
+ * positions are fed to `planMultiUp` as if seen on every sample, so the grid
+ * gets exactly the cell, seam and crop geometry every other 2x2 does.
+ */
+function callGridPlan(
+  tiles: FaceBox[], frames: number, srcW: number, srcH: number, probeFps: number, clipDur: number
+): MultiUpPlan | null {
+  const synth = Array.from({ length: Math.max(1, frames) }, () => tiles.map((t) => ({ ...t })));
+  const plan = planMultiUp(synth, srcW, srcH, probeFps, clipDur);
+  if (plan?.layouts[0]?.axis === "grid" && plan.whole) return plan;
+  console.warn(
+    `[facetrack] 2x2 call tiles ${tiles.map((t) => `(${t.cx.toFixed(2)},${t.cy.toFixed(2)},h${t.h.toFixed(2)})`).join(" ")} ` +
+    `did not plan as a whole-clip grid — keeping the probe's plan.`
+  );
+  return null;
+}
+
 // ─── Reaction layout ─────────────────────────────────────────────────────────
 //
 // A reaction video is one or two people watching a show, and both camera paths
@@ -3531,6 +3675,9 @@ export async function detectFacesCropData(
   try {
     const { perFrame, probeFps, pixels } = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH);
     probe = { perFrame, probeFps };
+    /** Every probe pass's heads, for the call-grid check at the end. */
+    const passes: FaceBox[][][] = [perFrame];
+    let quartersProbed = false;
     // A reaction video first: its webcams would otherwise read as a two-shot (or,
     // with a face in the show, a three-shot) and the show itself would be lost.
     reaction = planReaction(perFrame, srcW, srcH, probeFps, clipDur, pixels);
@@ -3583,6 +3730,7 @@ export async function detectFacesCropData(
         ` — re-probing in ${PROBE_SLICES} slices.`
       );
       const sliced = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, PROBE_SLICES);
+      passes.push(sliced.perFrame);
       const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels, crowd);
       multiUp = betterPlan(multiUp, slicedPlan);
     } else if (mayBeMissingAGrid(multiUp, perFrame)) {
@@ -3594,6 +3742,7 @@ export async function detectFacesCropData(
         `re-probing in ${PROBE_SLICES} slices.`
       );
       const sliced = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, PROBE_SLICES);
+      passes.push(sliced.perFrame);
       const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels, crowd);
       if (slicedPlan?.layouts[0]?.axis === "grid") {
         multiUp = betterPlan(multiUp, slicedPlan);
@@ -3604,8 +3753,40 @@ export async function detectFacesCropData(
         console.log(`[facetrack] Columns found no 2x2 — re-probing in quarters.`);
         const { slices, rows, cover } = PROBE_QUARTERS;
         const quartered = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, slices, rows, cover);
+        passes.push(quartered.perFrame);
+        quartersProbed = true;
         const quarteredPlan = planMultiUp(quartered.perFrame, srcW, srcH, quartered.probeFps, clipDur, quartered.pixels, crowd);
         if (quarteredPlan?.layouts[0]?.axis === "grid") multiUp = betterPlan(multiUp, quarteredPlan);
+      }
+    }
+
+    // ── A 2x2 call is ALWAYS a whole-clip 2x2 ──
+    //
+    // Everything above needs MoveNet to see the grid's people on enough frames
+    // at once, and on a call it often cannot (see callGridQuarters). Whatever
+    // it planned — a 3-up, a 2-up, a grid only in places, or nothing — a clip
+    // whose heads sit inside the four quarters of the frame is stacked as the
+    // call's own 2x2 from start to end.
+    const isWholeGrid = multiUp?.whole && multiUp.layouts[0]?.axis === "grid";
+    if (!reaction && !movingSingle && !isWholeGrid) {
+      let call = callGridQuarters(passes, srcW, srcH);
+      if (call && call.occupied < 4 && !quartersProbed) {
+        // Three tiles seen, or two in a column: the quarters find each tile's
+        // speaker on their own far more often than any wider pass.
+        console.log(`[facetrack] ${call.occupied} of 4 call tiles seen — probing the quarters.`);
+        const { slices, rows, cover } = PROBE_QUARTERS;
+        const quartered = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, slices, rows, cover);
+        passes.push(quartered.perFrame);
+        call = callGridQuarters(passes, srcW, srcH);
+      }
+      const grid = call?.tiles ? callGridPlan(call.tiles, perFrame.length, srcW, srcH, probeFps, clipDur) : null;
+      if (grid) {
+        console.log(
+          `[facetrack] 2x2 call (${call!.occupied} of 4 tiles seen) — ` +
+          `replacing the ${multiUp ? `${multiUp.layouts.map((l) => `${l.slots}-up/${l.axis}`).join(" + ")} plan` : "single-speaker camera"} ` +
+          `with a whole-clip 2x2.`
+        );
+        multiUp = grid;
       }
     }
   } catch (err) {
