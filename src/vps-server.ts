@@ -837,13 +837,23 @@ app.post("/facetrack", requireAuth, (req, res) => {
   facetrackByIdempotencyKey.set(job.idempotencyKey, job.facetrackJobId);
 
   void facetrackPool
-    .submit({
-      id: job.facetrackJobId,
-      videoUrl: request.videoUrl,
-      startTime: request.startTime,
-      endTime: request.endTime,
-      outputKey: request.outputKey,
-    })
+    .submit(
+      {
+        id: job.facetrackJobId,
+        videoUrl: request.videoUrl,
+        startTime: request.startTime,
+        endTime: request.endTime,
+        outputKey: request.outputKey,
+      },
+      // "cropping" only once a worker has it. It used to be set the moment the
+      // job was accepted, so a job waiting behind a 128-deep queue (2 workers
+      // while rendering) read as cropping for an hour, and the app — which
+      // allows 15 minutes of real cropping — gave up on it. 2026-10-15: 338
+      // re-crops failed that way, every one of them later finished here.
+      () => {
+        if (job.status === "queued") job.status = "cropping";
+      },
+    )
     .then((result) => {
       job.completedAt = Date.now();
       if (result.ok) {
@@ -878,7 +888,6 @@ app.post("/facetrack", requireAuth, (req, res) => {
       }
     });
 
-  job.status = "cropping";
   res.status(202).json(toFacetrackPayload(job));
 });
 

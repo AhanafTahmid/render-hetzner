@@ -57,6 +57,8 @@ export interface PoolOptions {
 interface Pending {
   job: FacetrackWorkerJob;
   resolve: (r: FacetrackWorkerResult) => void;
+  /** Called when a worker actually takes the job, not when it is queued. */
+  onStart?: () => void;
 }
 
 interface Worker {
@@ -119,7 +121,7 @@ export class FacetrackPool {
    * treats a failed crop as "retry it", and one unreachable URL should not take
    * down the batch around it.
    */
-  async submit(job: FacetrackWorkerJob): Promise<FacetrackWorkerResult> {
+  async submit(job: FacetrackWorkerJob, onStart?: () => void): Promise<FacetrackWorkerResult> {
     let localPath: string | undefined;
     this.fetching++;
     try {
@@ -135,7 +137,7 @@ export class FacetrackPool {
     }
 
     return new Promise((resolve) => {
-      this.queue.push({ job: { ...job, localPath }, resolve });
+      this.queue.push({ job: { ...job, localPath }, resolve, onStart });
       this.pump();
     });
   }
@@ -154,6 +156,7 @@ export class FacetrackPool {
       const pending = this.queue.shift();
       if (!pending) return;
       worker.current = pending;
+      pending.onStart?.();
       worker.proc.stdin?.write(JSON.stringify(pending.job) + "\n");
     }
   }
