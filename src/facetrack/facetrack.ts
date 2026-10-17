@@ -3734,9 +3734,13 @@ export async function detectFacesCropData(
       const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels, crowd);
       multiUp = betterPlan(multiUp, slicedPlan);
     } else if (mayBeMissingAGrid(multiUp, perFrame)) {
-      // Only a GRID may replace the whole-frame plan here. It already covers
-      // most of the clip, so anything short of the 2x2 this pass is looking
-      // for is no better than what we have.
+      // Only a 2D layout may replace the whole-frame plan here: the 2x2 this
+      // pass was written for, or the three-way call's pair-and-single (two
+      // tiles on top, one centred below). Both put a 2-up's heads in one half
+      // of the frame, which is what triggered this. A 1D result is no better
+      // than what we have. The pair-and-single used to be thrown away here:
+      // pmv9t6aill0ecw7 (2026-10-17) sliced as "3-up/tri" over the whole clip
+      // on 17 of 20 clips and shipped as a 2-up with the bottom tile cut off.
       console.log(
         `[facetrack] Whole-frame ${multiUp.slots}-up may be a partly seen 2x2 — ` +
         `re-probing in ${PROBE_SLICES} slices.`
@@ -3744,7 +3748,8 @@ export async function detectFacesCropData(
       const sliced = await probeSpeakers(ffmpeg, inputPath, start, clipDur, srcW, srcH, PROBE_SLICES);
       passes.push(sliced.perFrame);
       const slicedPlan = planMultiUp(sliced.perFrame, srcW, srcH, sliced.probeFps, clipDur, sliced.pixels, crowd);
-      if (slicedPlan?.layouts[0]?.axis === "grid") {
+      const slicedAxis = slicedPlan?.layouts[0]?.axis;
+      if (slicedAxis === "grid" || slicedAxis === "tri") {
         multiUp = betterPlan(multiUp, slicedPlan);
       } else {
         // Columns still hand MoveNet two stacked people per strip, and a busy
@@ -3756,7 +3761,8 @@ export async function detectFacesCropData(
         passes.push(quartered.perFrame);
         quartersProbed = true;
         const quarteredPlan = planMultiUp(quartered.perFrame, srcW, srcH, quartered.probeFps, clipDur, quartered.pixels, crowd);
-        if (quarteredPlan?.layouts[0]?.axis === "grid") multiUp = betterPlan(multiUp, quarteredPlan);
+        const quarteredAxis = quarteredPlan?.layouts[0]?.axis;
+        if (quarteredAxis === "grid" || quarteredAxis === "tri") multiUp = betterPlan(multiUp, quarteredPlan);
       }
     }
 
